@@ -1,4 +1,4 @@
-import { createWorld, drawWorld, updateWorld } from "./game"
+import { createWorld, drawWorld, handleInput, updateWorld } from "./game"
 import "./style.css"
 
 const canvas = document.querySelector<HTMLCanvasElement>("#game")!
@@ -8,28 +8,49 @@ canvas.height = rect.height
 
 const ctx = canvas.getContext("2d")
 if (ctx) {
-	const world = createWorld(20, 20)
+	const world = createWorld(21, 21)
 
-	let input: any = null
 	document.addEventListener("keydown", evt => {
 		switch (evt.code) {
 			case "KeyW":
-				input = { type: "up" }
+				handleInput(world, { type: "keydown", key: "up" })
 				break
 			case "KeyS":
-				input = { type: "down" }
+				handleInput(world, { type: "keydown", key: "down" })
 				break
 			case "KeyA":
-				input = { type: "left" }
+				handleInput(world, { type: "keydown", key: "left" })
 				break
 			case "KeyD":
-				input = { type: "right" }
+				handleInput(world, { type: "keydown", key: "right" })
 				break
 			case "KeyQ":
-				input = { type: "attack" }
+				handleInput(world, { type: "keydown", key: "attack" })
 				break
 			case "KeyE":
-				input = { type: "loot" }
+				handleInput(world, { type: "keydown", key: "loot" })
+				break
+		}
+	})
+	document.addEventListener("keyup", evt => {
+		switch (evt.code) {
+			case "KeyW":
+				handleInput(world, { type: "keyup", key: "up" })
+				break
+			case "KeyS":
+				handleInput(world, { type: "keyup", key: "down" })
+				break
+			case "KeyA":
+				handleInput(world, { type: "keyup", key: "left" })
+				break
+			case "KeyD":
+				handleInput(world, { type: "keyup", key: "right" })
+				break
+			case "KeyQ":
+				handleInput(world, { type: "keyup", key: "attack" })
+				break
+			case "KeyE":
+				handleInput(world, { type: "keyup", key: "loot" })
 				break
 		}
 	})
@@ -38,8 +59,7 @@ if (ctx) {
 	const raf = (time: number) => {
 		const delta = time - previous
 		previous = time
-		updateWorld(world, delta / 1000, input)
-		input = null
+		updateWorld(world, delta / 1000)
 		drawWorld(world, ctx)
 		requestAnimationFrame(raf)
 	}
