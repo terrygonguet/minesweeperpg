@@ -22,10 +22,6 @@ type World = {
 	width: number
 	height: number
 	player: Player
-	animations: {
-		type: "reveal"
-		postion: vec2
-	}[]
 	input: {
 		up: boolean
 		down: boolean
@@ -40,12 +36,13 @@ type InputKey = "up" | "down" | "left" | "right" | "attack" | "loot"
 type Input = { type: "keydown"; key: InputKey } | { type: "keyup"; key: InputKey }
 
 const FOG_RATIO = 4
+const CELL_SIZE = 35
+const FOG_SIZE = CELL_SIZE / FOG_RATIO
 
 export function create_world(width: number, height: number): World {
 	const world: World = {
 		width,
 		height,
-		animations: [],
 		grid: Array.from({ length: width * height }, () => null),
 		fog: Array.from({ length: width * height * FOG_RATIO * FOG_RATIO }, () => ({
 			opacity: 1,
@@ -55,7 +52,7 @@ export function create_world(width: number, height: number): World {
 		})),
 		player: {
 			position: vec2.fromValues(width / 2, height / 2),
-			fov: 1.75,
+			fov: 3.5,
 			state: "normal",
 			health: 3,
 			wealth: 0,
@@ -90,7 +87,6 @@ export function create_world(width: number, height: number): World {
 
 export function draw_world(world: World, ctx: CanvasRenderingContext2D) {
 	const { width, height } = ctx.canvas
-	const CELL_SIZE = 50
 
 	ctx.save()
 
@@ -155,7 +151,6 @@ export function draw_world(world: World, ctx: CanvasRenderingContext2D) {
 		}
 	}
 
-	const fog_size = Math.round(CELL_SIZE / FOG_RATIO)
 	for (let i = 0; i < world.fog.length; i++) {
 		const fog = world.fog[i]
 		const x = i % (world.width * FOG_RATIO)
@@ -163,20 +158,23 @@ export function draw_world(world: World, ctx: CanvasRenderingContext2D) {
 		const is_empty = fog.enemies + fog.traps + fog.treasures == 0
 
 		ctx.save()
+		let draw_rect = false
 		if (fog.opacity == 1) {
 			ctx.fillStyle = "gray"
-			ctx.fillRect(x * fog_size, y * fog_size, fog_size, fog_size)
+			draw_rect = true
 		} else if (is_empty && fog.opacity > 0) {
 			ctx.globalAlpha = fog.opacity
 			ctx.fillStyle = "gray"
-			ctx.fillRect(x * fog_size, y * fog_size, fog_size, fog_size)
+			draw_rect = true
 		} else if (!is_empty) {
 			ctx.globalAlpha = fog.opacity || 1
 			if (fog.enemies > 0) ctx.fillStyle = "red"
 			else if (fog.traps > 0) ctx.fillStyle = "orange"
 			else if (fog.treasures > 0) ctx.fillStyle = "green"
-			ctx.fillRect(x * fog_size, y * fog_size, fog_size, fog_size)
+			draw_rect = true
 		}
+		if (draw_rect)
+			ctx.fillRect(Math.floor(x * FOG_SIZE), Math.floor(y * FOG_SIZE), Math.ceil(FOG_SIZE), Math.ceil(FOG_SIZE))
 		ctx.restore()
 	}
 
@@ -196,17 +194,6 @@ export function draw_world(world: World, ctx: CanvasRenderingContext2D) {
 	ctx.arc(world.player.position[0] * CELL_SIZE, world.player.position[1] * CELL_SIZE, CELL_SIZE / 3.5, 0, 2 * Math.PI)
 	ctx.fill()
 	ctx.restore()
-
-	// ctx.save()
-	// ctx.beginPath()
-	// ctx.moveTo((world.width / 2) * CELL_SIZE, 0)
-	// ctx.lineTo((world.width / 2) * CELL_SIZE, (world.height + 1) * CELL_SIZE)
-	// ctx.moveTo(0, (world.height / 2) * CELL_SIZE)
-	// ctx.lineTo((world.width + 1) * CELL_SIZE, (world.height / 2) * CELL_SIZE)
-	// ctx.lineWidth = 2
-	// ctx.stroke()
-	// ctx.restore()
-
 	ctx.restore()
 }
 
@@ -236,41 +223,42 @@ export function update_world(world: World, delta: number) {
 			case "enemy":
 				if (world.player.state == "attack") {
 					;(cell as Cell).type = "treasure"
-					recompute_fog(world)
 				} else {
 					world.player.health--
 				}
 				world.player.state = "normal"
 				console.log(world.player)
 				if (fog.opacity == 1) {
-					const top_left = vec2.scale(vec2.create(), cell_pos, FOG_RATIO)
-					world.animations.push({ type: "reveal", postion: top_left })
-					world.animations.push({ type: "reveal", postion: vec2.add(vec2.create(), top_left, [1, 0]) })
-					world.animations.push({ type: "reveal", postion: vec2.add(vec2.create(), top_left, [0, 1]) })
-					world.animations.push({ type: "reveal", postion: vec2.add(vec2.create(), top_left, [1, 1]) })
+					const pos = vec2.scale(vec2.create(), cell_pos, FOG_RATIO)
+					reveal(world, pos, vec2.fromValues(FOG_RATIO, FOG_RATIO))
 				}
+				recompute_fog(world)
 				break
 		}
 	}
 
 	const fov_floor = Math.floor(world.player.fov * FOG_RATIO)
 	const fov_ceil = Math.ceil(world.player.fov * FOG_RATIO)
+	const temp = vec2.create()
 	for (let dx = -fov_floor; dx <= fov_ceil; dx++) {
 		for (let dy = -fov_floor; dy <= fov_ceil; dy++) {
-			const dist = Math.hypot(dx, dy)
-			if (dist > world.player.fov * FOG_RATIO) continue
+			vec2.set(temp, dx, dy)
+			vec2.add(temp, temp, fog_pos)
+			vec2.scale(temp, temp, 1 / FOG_RATIO)
+			const dist = vec2.distance(temp, world.player.position)
+			if (dist > world.player.fov) continue
 
 			const pos = vec2.fromValues(fog_pos[0] + dx, fog_pos[1] + dy)
 			if (!is_in_bounds(pos, world.width * FOG_RATIO, world.height * FOG_RATIO)) continue
 
 			const fog = get_at(world.fog, pos, world.width * FOG_RATIO)
-			if (fog.opacity == 0 || world.animations.some(({ postion }) => vec2.equals(postion, pos))) continue
-			if (dist <= Math.SQRT1_2 && fog.enemies + fog.traps + fog.treasures == 0) {
-				world.animations.push({ type: "reveal", postion: pos })
+			if (fog.opacity == 0) continue
+			if (dist <= Math.SQRT2 && fog.enemies + fog.traps + fog.treasures == 0) {
+				fog.opacity = 0
 				continue
 			}
 
-			const temp = vec2.create()
+			const taget_opacity = compute_target_opacity(dist / world.player.fov)
 			neighbours: for (let dx = -1; dx <= 1; dx++) {
 				for (let dy = -1; dy <= 1; dy++) {
 					const neighbour_pos = vec2.set(temp, pos[0] + dx, pos[1] + dy)
@@ -279,24 +267,13 @@ export function update_world(world: World, delta: number) {
 					const neighbour_fog = get_at(world.fog, neighbour_pos, world.width * FOG_RATIO)
 					if (
 						neighbour_fog.enemies + neighbour_fog.traps + neighbour_fog.treasures == 0 &&
-						neighbour_fog.opacity == 0
+						neighbour_fog.opacity != 1
 					) {
-						world.animations.push({ type: "reveal", postion: pos })
+						fog.opacity = Math.min(fog.opacity, taget_opacity)
 						break neighbours
 					}
 				}
 			}
-		}
-	}
-
-	for (let i = 0; i < world.animations.length; i++) {
-		const animation = world.animations[i]
-		switch (animation.type) {
-			case "reveal":
-				const fog = get_at(world.fog, animation.postion, world.width * FOG_RATIO)
-				if (fog) fog.opacity = Math.max(fog.opacity - delta * 5, 0)
-				if (fog.opacity == 0) world.animations.splice(i--, 1)
-				break
 		}
 	}
 }
@@ -332,7 +309,7 @@ export function handle_input(world: World, input: Input) {
 	}
 }
 
-function recompute_fog(world: World) {
+function recompute_fog(world: World): void {
 	for (const fog of world.fog) {
 		fog.enemies = 0
 		fog.traps = 0
@@ -363,12 +340,29 @@ function recompute_fog(world: World) {
 	}
 }
 
+function reveal(world: World, pos: vec2, size: vec2): void {
+	const temp = vec2.create()
+	for (let x = 0; x < size[0]; x++) {
+		for (let y = 0; y < size[1]; y++) {
+			vec2.set(temp, pos[0] + x, pos[1] + y)
+			if (!is_in_bounds(temp, world.width * FOG_RATIO, world.height * FOG_RATIO)) continue
+			const fog = get_at(world.fog, temp, world.width * FOG_RATIO)
+			fog.opacity = 0
+		}
+	}
+}
+
 function get_at<T>(arr: T[], pos: vec2, stride: number): T {
 	return arr[pos[1] * stride + pos[0]]
 }
 
 function is_in_bounds(pos: vec2, width: number, height: number): boolean {
 	return pos[0] >= 0 && pos[1] >= 0 && pos[0] < width && pos[1] < height
+}
+
+function compute_target_opacity(t: number): number {
+	if (t < 0.8) return 0
+	else return (t - 0.8) * 5
 }
 
 // function* neighbours<T>(arr: T[], pos: vec2, width: number, height: number, distance = 1): Generator<T> {
