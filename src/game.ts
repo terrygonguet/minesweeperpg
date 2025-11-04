@@ -1,31 +1,17 @@
 import { vec2 } from "gl-matrix"
 
-type Cell = { type: "wall" } | { type: "empty" } | { type: "treasure" } | { type: "enemy" } | { type: "trap" }
-
-type Player = {
-	position: vec2
-	fov: number
-	state: "normal" | "attack" | "loot"
-	health: number
-	wealth: number
-	speed: number
-	animation: {
-		from: vec2
-		t: number
-	}
-}
-
 type World = {
-	grid: (Cell | null)[]
+	tiles: Tile[]
 	fog: {
 		opacity: number
 		enemies: number
 		treasures: number
 		traps: number
 	}[]
+	entities: Entity[]
+	new_entities: Entity[]
 	width: number
 	height: number
-	player: Player
 	input: {
 		up: boolean
 		down: boolean
@@ -36,34 +22,73 @@ type World = {
 	}
 }
 
-type InputKey = "up" | "down" | "left" | "right" | "attack" | "loot"
-type Input = { type: "keydown"; key: InputKey } | { type: "keyup"; key: InputKey }
+type Entity = Player | Monster | Loot | Treasure
 
+type Player = {
+	type: "player"
+	position: vec2
+	deleted: false
+	fov: number
+	health: number
+	wealth: number
+	speed: number
+	cooldown: number
+	cooldown_scale: number
+	animation: {
+		from: vec2
+		t: number
+	}
+}
+
+type Monster = {
+	type: "monster"
+	position: vec2
+	deleted: boolean
+	health: number
+}
+
+type Loot = {
+	type: "loot"
+	position: vec2
+	deleted: boolean
+	value: number
+}
+
+type Treasure = {
+	type: "treasure"
+	position: vec2
+	deleted: boolean
+	value: number
+}
+
+type Tile = number & { __brand: "Tile" }
+
+const Tile = {
+	NONE: 0 as Tile,
+	Empty: 1 as Tile,
+	Wall: 2 as Tile,
+	DoorClosed: 3 as Tile,
+	DoorOpen: 4 as Tile,
+}
+
+const TAU = 2 * Math.PI
 const CELL_SIZE = 35
 
-export function create_world(width: number, height: number): World {
+export function create_world(): World {
+	const width = 21
+	const height = 21
 	const world: World = {
 		width,
 		height,
-		grid: Array.from({ length: width * height }, () => null),
+		tiles: Array.from({ length: width * height }, () => Tile.NONE),
 		fog: Array.from({ length: width * height }, () => ({
 			opacity: 1,
 			enemies: 0,
 			traps: 0,
 			treasures: 0,
 		})),
-		player: {
-			position: vec2.fromValues(Math.floor(width / 2), Math.floor(height / 2)),
-			fov: 2.5,
-			state: "normal",
-			health: 3,
-			wealth: 0,
-			speed: 4,
-			animation: {
-				from: vec2.create(),
-				t: 1,
-			},
-		},
+		entities: [],
+		new_entities: [],
 		input: {
 			up: false,
 			down: false,
@@ -74,26 +99,34 @@ export function create_world(width: number, height: number): World {
 		},
 	}
 
-	for (let y = 0; y < height; y++) {
-		for (let x = 0; x < width; x++) {
-			if (x == 0 || y == 0 || x == width - 1 || y == height - 1) world.grid[y * width + x] = { type: "wall" }
-			else world.grid[y * width + x] = { type: "empty" }
+	world.entities.push({
+		type: "player",
+		position: vec2.fromValues(Math.floor(width / 2), Math.floor(height / 2)),
+		deleted: false,
+		fov: 2.5,
+		health: 5,
+		wealth: 0,
+		speed: 4,
+		cooldown: 0,
+		cooldown_scale: 1,
+		animation: { from: vec2.create(), t: 1 },
+	})
+
+	for (let n = 0; n < 10; n++) {
+		const x = Math.floor(Math.random() * (width - 2)) + 1
+		const y = Math.floor(Math.random() * (width - 2)) + 1
+		if (world.entities.some(entity => entity.position[0] == x && entity.position[1] == y)) continue
+		if (Math.random() < 0.5) {
+			world.entities.push({ type: "monster", position: vec2.fromValues(x, y), deleted: false, health: 5 })
+		} else {
+			world.entities.push({ type: "treasure", position: vec2.fromValues(x, y), deleted: false, value: 3 })
 		}
 	}
 
-	for (let i = 0; i < 30; i++) {
-		const x = Math.floor(Math.random() * (width - 2)) + 1
-		const y = Math.floor(Math.random() * (height - 2)) + 1
-		switch (Math.floor(Math.random() * 3)) {
-			case 0:
-				world.grid[y * width + x] = { type: "enemy" }
-				break
-			case 1:
-				world.grid[y * width + x] = { type: "treasure" }
-				break
-			case 2:
-				world.grid[y * width + x] = { type: "trap" }
-				break
+	for (let y = 0; y < height; y++) {
+		for (let x = 0; x < width; x++) {
+			const is_wall = x == 0 || y == 0 || x == width - 1 || y == height - 1
+			set_at_xy(world.tiles, x, y, width, is_wall ? Tile.Wall : Tile.Empty)
 		}
 	}
 
@@ -104,7 +137,7 @@ export function create_world(width: number, height: number): World {
 export function draw_world(world: World, ctx: CanvasRenderingContext2D) {
 	const { width, height } = ctx.canvas
 
-	ctx.save()
+	ctx.reset()
 
 	ctx.fillStyle = "#333"
 	ctx.fillRect(0, 0, width, height)
@@ -114,83 +147,134 @@ export function draw_world(world: World, ctx: CanvasRenderingContext2D) {
 		Math.round(height / 2 - (world.height * CELL_SIZE) / 2),
 	)
 
-	for (let y = 0; y < world.height; y++) {
-		for (let x = 0; x < world.width; x++) {
-			const cell = world.grid[y * world.width + x]
-			if (!cell) continue
+	ctx.save()
+	for (let i = 0; i < world.tiles.length; i++) {
+		const tile = world.tiles[i]
+		if (tile == Tile.NONE) continue
 
-			ctx.save()
-			ctx.translate(x * CELL_SIZE, y * CELL_SIZE)
-			switch (cell.type) {
-				case "empty":
-					ctx.fillStyle = "white"
-					ctx.fillRect(0, 0, CELL_SIZE, CELL_SIZE)
-					break
-				case "wall":
-					ctx.fillStyle = "black"
-					ctx.fillRect(0, 0, CELL_SIZE, CELL_SIZE)
-					break
-				case "enemy":
-					ctx.fillStyle = "white"
-					ctx.fillRect(0, 0, CELL_SIZE, CELL_SIZE)
-					ctx.fillStyle = "red"
-					ctx.beginPath()
-					ctx.arc(CELL_SIZE / 2, CELL_SIZE / 2, CELL_SIZE / 3.5, 0, 2 * Math.PI)
-					ctx.fill()
-					break
-				case "treasure":
-					ctx.fillStyle = "white"
-					ctx.fillRect(0, 0, CELL_SIZE, CELL_SIZE)
-					ctx.fillStyle = "green"
-					ctx.fillRect(10, 10, CELL_SIZE - 20, CELL_SIZE - 20)
-					break
-				case "trap":
-					ctx.fillStyle = "white"
-					ctx.fillRect(0, 0, CELL_SIZE, CELL_SIZE)
-					ctx.beginPath()
-					ctx.fillStyle = "orange"
-					ctx.moveTo(CELL_SIZE / 2, 5)
-					ctx.lineTo(CELL_SIZE - 5, CELL_SIZE - 5)
-					ctx.lineTo(5, CELL_SIZE - 5)
-					ctx.closePath()
-					ctx.fill()
-					break
-			}
+		const x = i % world.width
+		const y = Math.floor(i / world.width)
 
-			const fog = world.fog[y * world.width + x]
-			if (fog.opacity != 0) {
-				ctx.fillStyle = "gray"
-				ctx.globalAlpha = fog.opacity
-				ctx.fillRect(0, 0, CELL_SIZE, CELL_SIZE)
-			} else {
-				let i = 0
-				const num_objects = fog.enemies + fog.traps + fog.treasures
-				const positions = setups[num_objects]
-				ctx.beginPath()
-				for (let n = 0; n < fog.enemies; n++) {
-					const [x, y] = positions[i++]
-					ctx.fillStyle = "red"
-					ctx.arc(x * CELL_SIZE, y * CELL_SIZE, 0.13 * CELL_SIZE, 0, 2 * Math.PI)
-				}
-				ctx.fill()
-				ctx.beginPath()
-				for (let n = 0; n < fog.traps; n++) {
-					const [x, y] = positions[i++]
-					ctx.fillStyle = "orange"
-					ctx.arc(x * CELL_SIZE, y * CELL_SIZE, 0.13 * CELL_SIZE, 0, 2 * Math.PI)
-				}
-				ctx.fill()
-				ctx.beginPath()
-				for (let n = 0; n < fog.treasures; n++) {
-					const [x, y] = positions[i++]
-					ctx.fillStyle = "green"
-					ctx.arc(x * CELL_SIZE, y * CELL_SIZE, 0.13 * CELL_SIZE, 0, 2 * Math.PI)
-				}
-				ctx.fill()
-			}
-			ctx.restore()
+		switch (tile) {
+			case Tile.Empty:
+				ctx.fillStyle = "white"
+				ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+				break
+			case Tile.Wall:
+				ctx.fillStyle = "black"
+				ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+				break
+			case Tile.DoorClosed:
+				ctx.fillStyle = "brown"
+				ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+				break
+			case Tile.DoorOpen:
+				ctx.fillStyle = "brown"
+				ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE / 5, CELL_SIZE)
+				break
 		}
 	}
+	ctx.restore()
+
+	for (let i = 0; i < world.fog.length; i++) {
+		const fog = world.fog[i]
+		const x = i % world.width
+		const y = Math.floor(i / world.width)
+
+		ctx.save()
+		ctx.translate(x * CELL_SIZE, y * CELL_SIZE)
+		if (fog.opacity != 1) {
+			let i = 0
+			const num_objects = fog.enemies + fog.traps + fog.treasures
+			const positions = setups[num_objects]
+			ctx.beginPath()
+			for (let n = 0; n < fog.enemies; n++) {
+				const [x, y] = positions[i++]
+				ctx.fillStyle = "red"
+				ctx.arc(x * CELL_SIZE, y * CELL_SIZE, 0.13 * CELL_SIZE, 0, TAU)
+			}
+			ctx.fill()
+			ctx.beginPath()
+			for (let n = 0; n < fog.traps; n++) {
+				const [x, y] = positions[i++]
+				ctx.fillStyle = "orange"
+				ctx.arc(x * CELL_SIZE, y * CELL_SIZE, 0.13 * CELL_SIZE, 0, TAU)
+			}
+			ctx.fill()
+			ctx.beginPath()
+			for (let n = 0; n < fog.treasures; n++) {
+				const [x, y] = positions[i++]
+				ctx.fillStyle = "green"
+				ctx.arc(x * CELL_SIZE, y * CELL_SIZE, 0.13 * CELL_SIZE, 0, TAU)
+			}
+			ctx.fill()
+		}
+		if (fog.opacity != 0) {
+			ctx.fillStyle = "gray"
+			ctx.globalAlpha = fog.opacity
+			ctx.fillRect(0, 0, CELL_SIZE, CELL_SIZE)
+		}
+		ctx.restore()
+	}
+
+	ctx.save()
+	for (const entity of world.entities) {
+		const fog = get_at_vec2(world.fog, entity.position, world.width)
+		if (fog.opacity == 1) continue
+		switch (entity.type) {
+			case "player": {
+				const player = entity
+				const player_sprite_pos = vec2.lerp(
+					vec2.create(),
+					player.animation.from,
+					player.position,
+					player.animation.t,
+				)
+				ctx.beginPath()
+				ctx.fillStyle = "black"
+				ctx.arc(
+					(player_sprite_pos[0] + 0.5) * CELL_SIZE,
+					(player_sprite_pos[1] + 0.5) * CELL_SIZE,
+					CELL_SIZE / 3.5,
+					0,
+					TAU,
+				)
+				ctx.fill()
+				break
+			}
+			case "monster":
+				ctx.beginPath()
+				ctx.fillStyle = "red"
+				ctx.arc(
+					(entity.position[0] + 0.5) * CELL_SIZE,
+					(entity.position[1] + 0.5) * CELL_SIZE,
+					CELL_SIZE / 3.5,
+					0,
+					TAU,
+				)
+				ctx.fill()
+				break
+			case "loot":
+				ctx.fillStyle = "gold"
+				ctx.fillRect(
+					(entity.position[0] + 0.3) * CELL_SIZE,
+					(entity.position[1] + 0.3) * CELL_SIZE,
+					0.4 * CELL_SIZE,
+					0.4 * CELL_SIZE,
+				)
+				break
+			case "treasure":
+				ctx.fillStyle = "green"
+				ctx.fillRect(
+					(entity.position[0] + 0.2) * CELL_SIZE,
+					(entity.position[1] + 0.2) * CELL_SIZE,
+					0.6 * CELL_SIZE,
+					0.6 * CELL_SIZE,
+				)
+				break
+		}
+	}
+	ctx.restore()
 
 	ctx.save()
 	ctx.beginPath()
@@ -206,121 +290,120 @@ export function draw_world(world: World, ctx: CanvasRenderingContext2D) {
 	ctx.lineWidth = 0.5
 	ctx.stroke()
 	ctx.restore()
-
-	ctx.save()
-	const player_sprite_pos = vec2.lerp(
-		vec2.create(),
-		world.player.animation.from,
-		world.player.position,
-		world.player.animation.t,
-	)
-	ctx.translate(player_sprite_pos[0] * CELL_SIZE, player_sprite_pos[1] * CELL_SIZE)
-	switch (world.player.state) {
-		case "normal":
-			ctx.fillStyle = "black"
-			break
-		case "attack":
-			ctx.fillStyle = "darkred"
-			break
-		case "loot":
-			ctx.fillStyle = "darkgreen"
-			break
-	}
-	ctx.beginPath()
-	ctx.arc(0.5 * CELL_SIZE, 0.5 * CELL_SIZE, CELL_SIZE / 3.5, 0, 2 * Math.PI)
-	ctx.fill()
-	ctx.restore()
-
-	ctx.restore()
 }
 
 export function update_world(world: World, delta: number) {
-	const movement = vec2.fromValues(+world.input.right - +world.input.left, +world.input.down - +world.input.up)
-	if (vec2.length(movement) != 0 && world.player.animation.t == 1) {
-		vec2.copy(world.player.animation.from, world.player.position)
-		world.player.animation.t = 0
-
-		const new_pos = vec2.add(vec2.create(), world.player.position, movement)
-		const cell = get_at(world.grid, new_pos, world.width)
-		const fog = get_at(world.fog, new_pos, world.width)
-
-		if (cell) {
-			switch (cell.type) {
-				case "empty":
-					vec2.copy(world.player.position, new_pos)
-					break
-				case "treasure":
-					if (world.player.state == "loot" || fog.opacity != 1) {
-						world.player.wealth++
+	for (const entity of world.entities) {
+		switch (entity.type) {
+			case "player": {
+				const player = entity
+				const movement = vec2.fromValues(
+					+world.input.right - +world.input.left,
+					+world.input.down - +world.input.up,
+				)
+				if (vec2.squaredLength(movement) != 0 && player.cooldown == 0) {
+					let can_move = false
+					const new_pos = vec2.add(vec2.create(), player.position, movement)
+					const tile = get_at_vec2(world.tiles, new_pos, world.width)
+					switch (tile) {
+						case Tile.Empty:
+						case Tile.DoorOpen:
+							can_move = true
+							break
+						case Tile.DoorClosed:
+							set_at_vec2(world.tiles, new_pos, world.width, Tile.DoorOpen)
+							recompute_fog(world)
+							break
 					}
-					;(cell as Cell).type = "empty"
-					world.player.state = "normal"
-					vec2.copy(world.player.position, new_pos)
-					recompute_fog(world)
 
-					console.log(world.player)
-					break
-				case "enemy":
-					if (world.player.state == "attack") {
-						;(cell as Cell).type = "treasure"
-					} else {
-						world.player.health--
+					if (can_move) {
+						for (const entity of entities_at(world, new_pos)) {
+							switch (entity.type) {
+								case "player":
+									can_move = false
+									break
+								case "monster": {
+									can_move = false
+									player.health--
+									player.cooldown = 0.5
+									reveal(world, new_pos, true)
+									break
+								}
+								case "loot": {
+									player.wealth += entity.value
+									entity.deleted = true
+									reveal(world, new_pos, true)
+									break
+								}
+								case "treasure":
+									can_move = false
+									player.cooldown = 0.3
+									entity.deleted = true
+									world.new_entities.push({
+										type: "loot",
+										position: entity.position,
+										deleted: false,
+										value: entity.value,
+									})
+									break
+							}
+						}
 					}
-					world.player.state = "normal"
-					fog.opacity -= 0.0001
-					recompute_fog(world)
 
-					console.log(world.player)
-					break
-			}
-		}
-	}
+					if (can_move) move_player(player, new_pos)
+				}
 
-	// for each cell in view range
-	const temp = vec2.create()
-	const fov_floor = Math.floor(world.player.fov)
-	const fov_ceil = Math.ceil(world.player.fov)
-	for (let dx = -fov_floor; dx <= fov_ceil; dx++) {
-		for (let dy = -fov_floor; dy <= fov_ceil; dy++) {
-			const dist = Math.hypot(dx, dy)
-			if (dist > world.player.fov) continue
+				// for each cell in view range
+				const temp = vec2.create()
+				const fov_floor = Math.floor(player.fov)
+				const fov_ceil = Math.ceil(player.fov)
+				for (let dx = -fov_floor; dx <= fov_ceil; dx++) {
+					for (let dy = -fov_floor; dy <= fov_ceil; dy++) {
+						const dist = Math.hypot(dx, dy)
+						if (dist > player.fov) continue
 
-			const cur_pos = vec2.fromValues(world.player.position[0] + dx, world.player.position[1] + dy)
-			if (!is_in_bounds(cur_pos, world.width, world.height)) continue
+						const cur_pos = vec2.set(temp, player.position[0] + dx, player.position[1] + dy)
+						if (!is_in_bounds_vec2(cur_pos, world.width, world.height)) continue
 
-			const cur_fog = get_at(world.fog, cur_pos, world.width)
-			if (cur_fog.opacity == 0) continue
-			if (dist == 0) {
-				cur_fog.opacity = 0
-				continue
-			}
+						const cur_fog = get_at_vec2(world.fog, cur_pos, world.width)
+						if (cur_fog.opacity == 0) continue
+						if (dist == 0) {
+							cur_fog.opacity = 0
+							continue
+						}
 
-			// we reveal if at least one 0 neighbour has been revealed
-			neighbours: for (let dx = -1; dx <= 1; dx++) {
-				for (let dy = -1; dy <= 1; dy++) {
-					const neighbour_pos = vec2.set(temp, cur_pos[0] + dx, cur_pos[1] + dy)
-					if (!is_in_bounds(neighbour_pos, world.width, world.height)) continue
-
-					const neighbour_fog = get_at(world.fog, neighbour_pos, world.width)
-					if (
-						neighbour_fog.enemies + neighbour_fog.traps + neighbour_fog.treasures == 0 &&
-						neighbour_fog.opacity != 1
-					) {
-						cur_fog.opacity -= 0.0001
-						break neighbours
+						// we reveal if at least one 0 neighbour has been revealed
+						for (const neighbour_fog of neighbours(world.fog, cur_pos, world.width, world.height)) {
+							const objects = neighbour_fog.enemies + neighbour_fog.traps + neighbour_fog.treasures
+							if (objects == 0 && neighbour_fog.opacity != 1) {
+								cur_fog.opacity -= 0.0001
+								break
+							}
+						}
 					}
 				}
+
+				player.cooldown = Math.max(player.cooldown - delta * player.cooldown_scale, 0)
+				player.animation.t = Math.min(player.animation.t + delta * 5 * player.cooldown_scale, 1)
+
+				break
 			}
 		}
 	}
+	world.input.attack = false
+	world.input.loot = false
 
 	for (const fog of world.fog) {
 		if (fog.opacity != 0 && fog.opacity != 1) fog.opacity = Math.max(fog.opacity - delta * 5, 0)
 	}
-	const player_move_dist = vec2.distance(world.player.animation.from, world.player.position)
-	world.player.animation.t = Math.min(world.player.animation.t + delta * (world.player.speed / player_move_dist), 1)
+
+	world.entities = world.entities.filter(entity => !entity.deleted).concat(world.new_entities)
+	world.new_entities = []
+	recompute_fog(world)
 }
 
+type InputKey = "up" | "down" | "left" | "right" | "attack" | "loot"
+type Input = { type: "keydown"; key: InputKey } | { type: "keyup"; key: InputKey }
 export function handle_input(world: World, input: Input) {
 	switch (input.key) {
 		case "up":
@@ -335,20 +418,14 @@ export function handle_input(world: World, input: Input) {
 		case "right":
 			world.input.right = input.type == "keydown"
 			break
-		case "attack":
+		case "attack": {
 			world.input.attack = input.type == "keydown"
-			if (world.input.attack) {
-				if (world.player.state == "attack") world.player.state = "normal"
-				else world.player.state = "attack"
-			}
 			break
-		case "loot":
+		}
+		case "loot": {
 			world.input.loot = input.type == "keydown"
-			if (world.input.loot) {
-				if (world.player.state == "loot") world.player.state = "normal"
-				else world.player.state = "loot"
-			}
 			break
+		}
 	}
 }
 
@@ -358,22 +435,54 @@ function recompute_fog(world: World) {
 		fog.traps = 0
 		fog.treasures = 0
 	}
-	for (let i = 0; i < world.fog.length; i++) {
-		const fog = world.fog[i]!
-		const x = i % world.width
-		const y = Math.floor(i / world.width)
-		for (let dx = -1; dx <= 1; dx++) {
-			for (let dy = -1; dy <= 1; dy++) {
-				const cell = world.grid[(y + dy) * world.width + x + dx]
-				const neighbour = world.fog[(y + dy) * world.width + x + dx]
-				if (!cell || neighbour.opacity != 1) continue
-				else if (cell.type == "enemy") fog.enemies++
-				else if (cell.type == "treasure") fog.treasures++
-				else if (cell.type == "trap") fog.traps++
-			}
+
+	for (const entity of world.entities) {
+		const cur_fog = get_at_vec2(world.fog, entity.position, world.width)
+		if (cur_fog.opacity != 1) continue
+		switch (entity.type) {
+			case "monster":
+				for (const fog of neighbours(world.fog, entity.position, world.width, world.height)) {
+					fog.enemies++
+				}
+				break
+			case "treasure":
+				for (const fog of neighbours(world.fog, entity.position, world.width, world.height)) {
+					fog.treasures++
+				}
+				break
 		}
 	}
 }
+
+function move_player(player: Player, to: vec2) {
+	vec2.copy(player.animation.from, player.position)
+	vec2.copy(player.position, to)
+	player.cooldown = 0.2
+	player.cooldown_scale = 1 / vec2.distance(player.animation.from, player.position)
+	player.animation.t = 0
+}
+
+function reveal(world: World, pos: vec2, full_reveal = false): void {
+	const fog = get_at_vec2(world.fog, pos, world.width)
+	fog.opacity = full_reveal ? 0 : 0.9999
+}
+
+function* entities_at(world: World, pos: vec2, include_deleted = false): Generator<Entity, void, undefined> {
+	for (const entity of world.entities) {
+		if (vec2.equals(entity.position, pos) && (!entity.deleted || include_deleted)) yield entity
+	}
+}
+
+// function* entities_around(
+// 	world: World,
+// 	pos: vec2,
+// 	distance = Math.SQRT2,
+// 	include_deleted = false,
+// ): Generator<Entity, void, undefined> {
+// 	for (const entity of world.entities) {
+// 		if (vec2.distance(entity.position, pos) <= distance && (!entity.deleted || include_deleted)) yield entity
+// 	}
+// }
 
 const setups: vec2[][] = [
 	[],
@@ -417,10 +526,36 @@ const setups: vec2[][] = [
 	],
 ]
 
-function get_at<T>(arr: T[], pos: vec2, stride: number): T {
+function get_at_vec2<T>(arr: T[], pos: vec2, stride: number): T {
 	return arr[pos[1] * stride + pos[0]]
 }
 
-function is_in_bounds(pos: vec2, width: number, height: number): boolean {
+function get_at_xy<T>(arr: T[], x: number, y: number, stride: number): T {
+	return arr[y * stride + x]
+}
+
+function set_at_vec2<T>(arr: T[], pos: vec2, stride: number, value: T): void {
+	arr[pos[1] * stride + pos[0]] = value
+}
+
+function set_at_xy<T>(arr: T[], x: number, y: number, stride: number, value: T): void {
+	arr[y * stride + x] = value
+}
+
+function is_in_bounds_vec2(pos: vec2, width: number, height: number): boolean {
 	return pos[0] >= 0 && pos[1] >= 0 && pos[0] < width && pos[1] < height
+}
+
+function is_in_bounds_xy(x: number, y: number, width: number, height: number): boolean {
+	return x >= 0 && y >= 0 && x < width && y < height
+}
+
+function* neighbours<T>(arr: T[], pos: vec2, width: number, height: number): Generator<T, void, undefined> {
+	for (let dx = -1; dx <= 1; dx++) {
+		for (let dy = -1; dy <= 1; dy++) {
+			const x = pos[0] + dx
+			const y = pos[1] + dy
+			if ((dx != 0 || dy != 0) && is_in_bounds_xy(x, y, width, height)) yield get_at_xy(arr, x, y, width)
+		}
+	}
 }

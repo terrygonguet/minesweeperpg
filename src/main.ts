@@ -8,8 +8,6 @@ canvas.height = rect.height
 
 const ctx = canvas.getContext("2d")
 if (ctx) {
-	const world = create_world(21, 21)
-
 	document.addEventListener("keydown", evt => {
 		switch (evt.code) {
 			case "KeyW":
@@ -55,6 +53,7 @@ if (ctx) {
 		}
 	})
 
+	const world = create_world()
 	let previous = performance.now()
 	const raf = (time: number) => {
 		const delta = time - previous
