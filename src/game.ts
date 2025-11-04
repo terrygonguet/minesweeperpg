@@ -1,4 +1,10 @@
 import { vec2 } from "gl-matrix"
+import tileset_src from "$assets/tileset.sprites.png"
+import tiles_sheet from "$assets/tileset.sheet.json"
+import enemies_src from "$assets/enemies.sprites.png"
+import enemies_sheet from "$assets/enemies.sheet.json"
+import hero_src from "$assets/hero.sprites.png"
+import hero_sheet from "$assets/hero.sheet.json"
 
 type World = {
 	tiles: Tile[]
@@ -13,12 +19,26 @@ type World = {
 	width: number
 	height: number
 	input: {
-		up: boolean
-		down: boolean
-		left: boolean
-		right: boolean
-		attack: boolean
-		loot: boolean
+		up: number
+		down: number
+		left: number
+		right: number
+		attack: number
+		loot: number
+	}
+	sprites: {
+		tiles: {
+			image: HTMLImageElement
+			sheet: SpriteSheet
+		}
+		enemies: {
+			image: HTMLImageElement
+			sheet: SpriteSheet
+		}
+		hero: {
+			image: HTMLImageElement
+			sheet: SpriteSheet
+		}
 	}
 }
 
@@ -33,10 +53,10 @@ type Player = {
 	wealth: number
 	speed: number
 	cooldown: number
-	cooldown_scale: number
 	animation: {
 		from: vec2
 		t: number
+		t_scale: number
 	}
 }
 
@@ -63,16 +83,28 @@ type Treasure = {
 
 type Tile = number & { __brand: "Tile" }
 
+let __tile_id = 1 as Tile
 const Tile = {
+	ANY: -3 as Tile,
+	IMPASSABLE: -2 as Tile,
+	PASSABLE: -1 as Tile,
 	NONE: 0 as Tile,
-	Empty: 1 as Tile,
-	Wall: 2 as Tile,
-	DoorClosed: 3 as Tile,
-	DoorOpen: 4 as Tile,
+	Empty: __tile_id++,
+	WallTop: __tile_id++,
+	WallTopLeft: __tile_id++,
+	WallTopRight: __tile_id++,
+	WallLeft: __tile_id++,
+	WallRight: __tile_id++,
+	WallBottom: __tile_id++,
+	WallBottomLeft: __tile_id++,
+	WallBottomRight: __tile_id++,
+	DoorClosed: __tile_id++,
+	DoorOpen: __tile_id++,
 }
+const passable_tiles = [Tile.Empty, Tile.DoorOpen]
 
 const TAU = 2 * Math.PI
-const CELL_SIZE = 35
+const CELL_SIZE = 32
 
 export function create_world(): World {
 	const width = 21
@@ -90,14 +122,28 @@ export function create_world(): World {
 		entities: [],
 		new_entities: [],
 		input: {
-			up: false,
-			down: false,
-			left: false,
-			right: false,
-			attack: false,
-			loot: false,
+			up: 0,
+			down: 0,
+			left: 0,
+			right: 0,
+			attack: 0,
+			loot: 0,
+		},
+		sprites: {
+			tiles: { image: new Image(), sheet: tiles_sheet },
+			enemies: {
+				image: new Image(),
+				sheet: enemies_sheet,
+			},
+			hero: {
+				image: new Image(),
+				sheet: hero_sheet,
+			},
 		},
 	}
+	world.sprites.tiles.image.src = tileset_src
+	world.sprites.enemies.image.src = enemies_src
+	world.sprites.hero.image.src = hero_src
 
 	world.entities.push({
 		type: "player",
@@ -108,8 +154,7 @@ export function create_world(): World {
 		wealth: 0,
 		speed: 4,
 		cooldown: 0,
-		cooldown_scale: 1,
-		animation: { from: vec2.create(), t: 1 },
+		animation: { from: vec2.create(), t: 1, t_scale: 1 },
 	})
 
 	for (let n = 0; n < 10; n++) {
@@ -125,8 +170,17 @@ export function create_world(): World {
 
 	for (let y = 0; y < height; y++) {
 		for (let x = 0; x < width; x++) {
-			const is_wall = x == 0 || y == 0 || x == width - 1 || y == height - 1
-			set_at_xy(world.tiles, x, y, width, is_wall ? Tile.Wall : Tile.Empty)
+			if (x == 0) {
+				if (y == 0) set_at_xy(world.tiles, x, y, width, Tile.WallTopLeft)
+				else if (y == height - 1) set_at_xy(world.tiles, x, y, width, Tile.WallBottomLeft)
+				else set_at_xy(world.tiles, x, y, width, Tile.WallLeft)
+			} else if (x == width - 1) {
+				if (y == 0) set_at_xy(world.tiles, x, y, width, Tile.WallTopRight)
+				else if (y == height - 1) set_at_xy(world.tiles, x, y, width, Tile.WallBottomRight)
+				else set_at_xy(world.tiles, x, y, width, Tile.WallRight)
+			} else if (y == 0) set_at_xy(world.tiles, x, y, width, Tile.WallTop)
+			else if (y == height - 1) set_at_xy(world.tiles, x, y, width, Tile.WallBottom)
+			else set_at_xy(world.tiles, x, y, width, Math.random() < 0.01 ? Tile.DoorClosed : Tile.Empty)
 		}
 	}
 
@@ -135,11 +189,13 @@ export function create_world(): World {
 }
 
 export function draw_world(world: World, ctx: CanvasRenderingContext2D) {
+	const temp = vec2.create()
 	const { width, height } = ctx.canvas
 
 	ctx.reset()
+	ctx.imageSmoothingEnabled = false
 
-	ctx.fillStyle = "#333"
+	ctx.fillStyle = "teal"
 	ctx.fillRect(0, 0, width, height)
 
 	ctx.translate(
@@ -154,23 +210,43 @@ export function draw_world(world: World, ctx: CanvasRenderingContext2D) {
 
 		const x = i % world.width
 		const y = Math.floor(i / world.width)
+		const pos = vec2.set(temp, x, y)
 
 		switch (tile) {
 			case Tile.Empty:
-				ctx.fillStyle = "white"
-				ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+				draw_sprite(ctx, world, "tiles", "floor1", pos)
 				break
-			case Tile.Wall:
-				ctx.fillStyle = "black"
-				ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+			case Tile.WallTop:
+				draw_sprite(ctx, world, "tiles", "wall_top1", pos)
+				break
+			case Tile.WallTopLeft:
+				draw_sprite(ctx, world, "tiles", "wall_topleft1", pos)
+				break
+			case Tile.WallTopRight:
+				draw_sprite(ctx, world, "tiles", "wall_topright1", pos)
+				break
+			case Tile.WallBottom:
+				draw_sprite(ctx, world, "tiles", "wall_bottom1", pos)
+				break
+			case Tile.WallBottomLeft:
+				draw_sprite(ctx, world, "tiles", "wall_bottomleft1", pos)
+				break
+			case Tile.WallBottomRight:
+				draw_sprite(ctx, world, "tiles", "wall_bottomright1", pos)
+				break
+			case Tile.WallLeft:
+				draw_sprite(ctx, world, "tiles", "wall_left1", pos)
+				break
+			case Tile.WallRight:
+				draw_sprite(ctx, world, "tiles", "wall_right1", pos)
 				break
 			case Tile.DoorClosed:
-				ctx.fillStyle = "brown"
-				ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+				draw_sprite(ctx, world, "tiles", "floor1", pos)
+				draw_sprite(ctx, world, "tiles", "door_horiz1", pos)
 				break
 			case Tile.DoorOpen:
-				ctx.fillStyle = "brown"
-				ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE / 5, CELL_SIZE)
+				draw_sprite(ctx, world, "tiles", "floor1", pos)
+				draw_sprite(ctx, world, "tiles", "door_horiz2", pos)
 				break
 		}
 	}
@@ -190,7 +266,7 @@ export function draw_world(world: World, ctx: CanvasRenderingContext2D) {
 			ctx.beginPath()
 			for (let n = 0; n < fog.enemies; n++) {
 				const [x, y] = positions[i++]
-				ctx.fillStyle = "red"
+				ctx.fillStyle = "firebrick"
 				ctx.arc(x * CELL_SIZE, y * CELL_SIZE, 0.13 * CELL_SIZE, 0, TAU)
 			}
 			ctx.fill()
@@ -204,7 +280,7 @@ export function draw_world(world: World, ctx: CanvasRenderingContext2D) {
 			ctx.beginPath()
 			for (let n = 0; n < fog.treasures; n++) {
 				const [x, y] = positions[i++]
-				ctx.fillStyle = "green"
+				ctx.fillStyle = "lightgreen"
 				ctx.arc(x * CELL_SIZE, y * CELL_SIZE, 0.13 * CELL_SIZE, 0, TAU)
 			}
 			ctx.fill()
@@ -221,6 +297,9 @@ export function draw_world(world: World, ctx: CanvasRenderingContext2D) {
 	for (const entity of world.entities) {
 		const fog = get_at_vec2(world.fog, entity.position, world.width)
 		if (fog.opacity == 1) continue
+
+		const pos = vec2.copy(temp, entity.position)
+
 		switch (entity.type) {
 			case "player": {
 				const player = entity
@@ -230,65 +309,21 @@ export function draw_world(world: World, ctx: CanvasRenderingContext2D) {
 					player.position,
 					player.animation.t,
 				)
-				ctx.beginPath()
-				ctx.fillStyle = "black"
-				ctx.arc(
-					(player_sprite_pos[0] + 0.5) * CELL_SIZE,
-					(player_sprite_pos[1] + 0.5) * CELL_SIZE,
-					CELL_SIZE / 3.5,
-					0,
-					TAU,
-				)
-				ctx.fill()
+				draw_sprite(ctx, world, "hero", "hero_down1", player_sprite_pos)
 				break
 			}
 			case "monster":
-				ctx.beginPath()
-				ctx.fillStyle = "red"
-				ctx.arc(
-					(entity.position[0] + 0.5) * CELL_SIZE,
-					(entity.position[1] + 0.5) * CELL_SIZE,
-					CELL_SIZE / 3.5,
-					0,
-					TAU,
-				)
-				ctx.fill()
+				draw_sprite(ctx, world, "enemies", "ghost_right1", pos)
 				break
 			case "loot":
-				ctx.fillStyle = "gold"
-				ctx.fillRect(
-					(entity.position[0] + 0.3) * CELL_SIZE,
-					(entity.position[1] + 0.3) * CELL_SIZE,
-					0.4 * CELL_SIZE,
-					0.4 * CELL_SIZE,
-				)
+				draw_sprite(ctx, world, "tiles", "gold1", pos)
 				break
 			case "treasure":
-				ctx.fillStyle = "green"
-				ctx.fillRect(
-					(entity.position[0] + 0.2) * CELL_SIZE,
-					(entity.position[1] + 0.2) * CELL_SIZE,
-					0.6 * CELL_SIZE,
-					0.6 * CELL_SIZE,
-				)
+				if (entity.value == 0) draw_sprite(ctx, world, "tiles", "chest3", pos)
+				else draw_sprite(ctx, world, "tiles", "chest2", pos)
 				break
 		}
 	}
-	ctx.restore()
-
-	ctx.save()
-	ctx.beginPath()
-	for (let x = 0; x <= world.width; x++) {
-		ctx.moveTo(x * CELL_SIZE, 0)
-		ctx.lineTo(x * CELL_SIZE, world.height * CELL_SIZE)
-	}
-	for (let y = 0; y <= world.height; y++) {
-		ctx.moveTo(0, y * CELL_SIZE)
-		ctx.lineTo(world.width * CELL_SIZE, y * CELL_SIZE)
-	}
-	ctx.strokeStyle = "lightgray"
-	ctx.lineWidth = 0.5
-	ctx.stroke()
 	ctx.restore()
 }
 
@@ -298,24 +333,26 @@ export function update_world(world: World, delta: number) {
 			case "player": {
 				const player = entity
 				const movement = vec2.fromValues(
-					+world.input.right - +world.input.left,
-					+world.input.down - +world.input.up,
+					world.input.right - world.input.left,
+					world.input.down - world.input.up,
 				)
+				if (Math.abs(movement[0]) > Math.abs(movement[1])) movement[1] = 0
+				else movement[0] = 0
+				vec2.normalize(movement, movement)
+
 				if (vec2.squaredLength(movement) != 0 && player.cooldown == 0) {
-					let can_move = false
 					const new_pos = vec2.add(vec2.create(), player.position, movement)
+					const new_fog = get_at_vec2(world.fog, new_pos, world.width)
 					const tile = get_at_vec2(world.tiles, new_pos, world.width)
+
 					switch (tile) {
-						case Tile.Empty:
-						case Tile.DoorOpen:
-							can_move = true
-							break
 						case Tile.DoorClosed:
 							set_at_vec2(world.tiles, new_pos, world.width, Tile.DoorOpen)
-							recompute_fog(world)
+							player.cooldown = 0.2
 							break
 					}
 
+					let can_move = passable_tiles.includes(tile)
 					if (can_move) {
 						for (const entity of entities_at(world, new_pos)) {
 							switch (entity.type) {
@@ -326,25 +363,24 @@ export function update_world(world: World, delta: number) {
 									can_move = false
 									player.health--
 									player.cooldown = 0.5
-									reveal(world, new_pos, true)
+									new_fog.opacity = 0
 									break
 								}
 								case "loot": {
 									player.wealth += entity.value
 									entity.deleted = true
-									reveal(world, new_pos, true)
+									new_fog.opacity = 0
 									break
 								}
 								case "treasure":
 									can_move = false
 									player.cooldown = 0.3
-									entity.deleted = true
-									world.new_entities.push({
-										type: "loot",
-										position: entity.position,
-										deleted: false,
-										value: entity.value,
-									})
+									if (new_fog.opacity == 1) {
+										new_fog.opacity = 0
+									} else {
+										player.wealth += entity.value
+										entity.value = 0
+									}
 									break
 							}
 						}
@@ -383,15 +419,15 @@ export function update_world(world: World, delta: number) {
 					}
 				}
 
-				player.cooldown = Math.max(player.cooldown - delta * player.cooldown_scale, 0)
-				player.animation.t = Math.min(player.animation.t + delta * 5 * player.cooldown_scale, 1)
+				player.cooldown = Math.max(player.cooldown - delta, 0)
+				player.animation.t = Math.min(player.animation.t + delta * 5 * player.animation.t_scale, 1)
 
 				break
 			}
 		}
 	}
-	world.input.attack = false
-	world.input.loot = false
+	world.input.attack = 0
+	world.input.loot = 0
 
 	for (const fog of world.fog) {
 		if (fog.opacity != 0 && fog.opacity != 1) fog.opacity = Math.max(fog.opacity - delta * 5, 0)
@@ -405,27 +441,26 @@ export function update_world(world: World, delta: number) {
 type InputKey = "up" | "down" | "left" | "right" | "attack" | "loot"
 type Input = { type: "keydown"; key: InputKey } | { type: "keyup"; key: InputKey }
 export function handle_input(world: World, input: Input) {
+	const value = input.type == "keydown" ? performance.now() : 0
 	switch (input.key) {
 		case "up":
-			world.input.up = input.type == "keydown"
+			world.input.up = value
 			break
 		case "down":
-			world.input.down = input.type == "keydown"
+			world.input.down = value
 			break
 		case "left":
-			world.input.left = input.type == "keydown"
+			world.input.left = value
 			break
 		case "right":
-			world.input.right = input.type == "keydown"
+			world.input.right = value
 			break
-		case "attack": {
-			world.input.attack = input.type == "keydown"
+		case "attack":
+			world.input.attack = value
 			break
-		}
-		case "loot": {
-			world.input.loot = input.type == "keydown"
+		case "loot":
+			world.input.loot = value
 			break
-		}
 	}
 }
 
@@ -457,15 +492,15 @@ function recompute_fog(world: World) {
 function move_player(player: Player, to: vec2) {
 	vec2.copy(player.animation.from, player.position)
 	vec2.copy(player.position, to)
-	player.cooldown = 0.2
-	player.cooldown_scale = 1 / vec2.distance(player.animation.from, player.position)
 	player.animation.t = 0
+	player.animation.t_scale = 1 / vec2.distance(player.animation.from, player.position)
+	player.cooldown = 0.2 / player.animation.t_scale
 }
 
-function reveal(world: World, pos: vec2, full_reveal = false): void {
-	const fog = get_at_vec2(world.fog, pos, world.width)
-	fog.opacity = full_reveal ? 0 : 0.9999
-}
+// function reveal(world: World, pos: vec2, full_reveal = false): void {
+// 	const fog = get_at_vec2(world.fog, pos, world.width)
+// 	fog.opacity = full_reveal ? 0 : 0.9999
+// }
 
 function* entities_at(world: World, pos: vec2, include_deleted = false): Generator<Entity, void, undefined> {
 	for (const entity of world.entities) {
@@ -482,6 +517,33 @@ function* entities_at(world: World, pos: vec2, include_deleted = false): Generat
 // 	for (const entity of world.entities) {
 // 		if (vec2.distance(entity.position, pos) <= distance && (!entity.deleted || include_deleted)) yield entity
 // 	}
+// }
+
+// function match_tile_pattern(world: World, pattern: Tile[], pos: vec2): boolean {
+// 	for (let dy = -1; dy <= 1; dy++) {
+// 		for (let dx = -1; dx <= 1; dx++) {
+// 			const i = (dy + 1) * 3 + dx + 1
+// 			const candidate = pattern[i]
+// 			if (candidate == Tile.ANY) continue
+// 			const x = pos[0] + dx
+// 			const y = pos[1] + dy
+// 			const tile = is_in_bounds_xy(x, y, world.width, world.height)
+// 				? get_at_xy(world.tiles, x, y, world.width)
+// 				: Tile.NONE
+// 			switch (candidate) {
+// 				case Tile.PASSABLE:
+// 					if (!passable_tiles.includes(tile)) return false
+// 					break
+// 				case Tile.IMPASSABLE:
+// 					if (passable_tiles.includes(tile)) return false
+// 					break
+// 				default:
+// 					if (tile != candidate) return false
+// 					break
+// 			}
+// 		}
+// 	}
+// 	return true
 // }
 
 const setups: vec2[][] = [
@@ -558,4 +620,42 @@ function* neighbours<T>(arr: T[], pos: vec2, width: number, height: number): Gen
 			if ((dx != 0 || dy != 0) && is_in_bounds_xy(x, y, width, height)) yield get_at_xy(arr, x, y, width)
 		}
 	}
+}
+
+type Sprite = {
+	frame: { x: number; y: number; w: number; h: number }
+}
+
+type SpriteSheet = {
+	frames: {
+		[name: string]: Sprite
+	}
+}
+
+type TileNames = {
+	tiles: keyof (typeof tiles_sheet)["frames"]
+	enemies: keyof (typeof enemies_sheet)["frames"]
+	hero: keyof (typeof hero_sheet)["frames"]
+}
+
+function draw_sprite<Sheet extends keyof TileNames>(
+	ctx: CanvasRenderingContext2D,
+	world: World,
+	sheet_name: Sheet,
+	sprite_name: TileNames[Sheet],
+	pos: vec2,
+): void {
+	const { sheet, image } = world.sprites[sheet_name]
+	const sprite = sheet.frames[sprite_name]
+	ctx.drawImage(
+		image,
+		sprite.frame.x,
+		sprite.frame.y,
+		sprite.frame.w,
+		sprite.frame.h,
+		pos[0] * CELL_SIZE,
+		pos[1] * CELL_SIZE,
+		CELL_SIZE,
+		CELL_SIZE,
+	)
 }
