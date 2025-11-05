@@ -53,10 +53,11 @@ type Player = {
 	wealth: number
 	speed: number
 	cooldown: number
+	last_move: vec2
+	targets: vec2[] | null
 	animation: {
 		from: vec2
 		t: number
-		t_scale: number
 	}
 }
 
@@ -65,6 +66,12 @@ type Monster = {
 	position: vec2
 	deleted: boolean
 	health: number
+	cooldown: number
+	target: vec2 | null
+	animation: {
+		from: vec2
+		t: number
+	}
 }
 
 type Loot = {
@@ -154,7 +161,9 @@ export function create_world(): World {
 		wealth: 0,
 		speed: 4,
 		cooldown: 0,
-		animation: { from: vec2.create(), t: 1, t_scale: 1 },
+		last_move: vec2.create(),
+		targets: null,
+		animation: { from: vec2.create(), t: 1 },
 	})
 
 	for (let n = 0; n < 10; n++) {
@@ -162,7 +171,15 @@ export function create_world(): World {
 		const y = Math.floor(Math.random() * (width - 2)) + 1
 		if (world.entities.some(entity => entity.position[0] == x && entity.position[1] == y)) continue
 		if (Math.random() < 0.5) {
-			world.entities.push({ type: "monster", position: vec2.fromValues(x, y), deleted: false, health: 5 })
+			world.entities.push({
+				type: "monster",
+				position: vec2.fromValues(x, y),
+				deleted: false,
+				health: 5,
+				cooldown: 1,
+				target: null,
+				animation: { from: vec2.create(), t: 1 },
+			})
 		} else {
 			world.entities.push({ type: "treasure", position: vec2.fromValues(x, y), deleted: false, value: 3 })
 		}
@@ -180,7 +197,7 @@ export function create_world(): World {
 				else set_at_xy(world.tiles, x, y, width, Tile.WallRight)
 			} else if (y == 0) set_at_xy(world.tiles, x, y, width, Tile.WallTop)
 			else if (y == height - 1) set_at_xy(world.tiles, x, y, width, Tile.WallBottom)
-			else set_at_xy(world.tiles, x, y, width, Math.random() < 0.01 ? Tile.DoorClosed : Tile.Empty)
+			else set_at_xy(world.tiles, x, y, width, Tile.Empty)
 		}
 	}
 
@@ -310,10 +327,32 @@ export function draw_world(world: World, ctx: CanvasRenderingContext2D) {
 					player.animation.t,
 				)
 				draw_sprite(ctx, world, "hero", "hero_down1", player_sprite_pos)
+				ctx.fillStyle = "rebeccapurple"
+				ctx.globalAlpha = 0.5
+				for (const target of player.targets ?? []) {
+					ctx.fillRect(target[0] * CELL_SIZE, target[1] * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+				}
+				ctx.globalAlpha = 1
+				ctx.fillStyle = "white"
+				ctx.font = "32px sans-serif"
+				ctx.fillText("Health: " + player.health + " - Weath: " + player.wealth, 0, -CELL_SIZE)
 				break
 			}
 			case "monster":
-				draw_sprite(ctx, world, "enemies", "ghost_right1", pos)
+				const monster = entity
+				const montser_sprite_pos = vec2.lerp(
+					vec2.create(),
+					monster.animation.from,
+					monster.position,
+					monster.animation.t,
+				)
+				draw_sprite(ctx, world, "enemies", "ghost_right1", montser_sprite_pos)
+				if (monster.target) {
+					ctx.fillStyle = "red"
+					ctx.globalAlpha = 0.5
+					ctx.fillRect(monster.target[0] * CELL_SIZE, monster.target[1] * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+					ctx.globalAlpha = 1
+				}
 				break
 			case "loot":
 				draw_sprite(ctx, world, "tiles", "gold1", pos)
@@ -329,7 +368,43 @@ export function draw_world(world: World, ctx: CanvasRenderingContext2D) {
 
 export function update_world(world: World, delta: number) {
 	for (const entity of world.entities) {
+		if (entity.deleted) continue
 		switch (entity.type) {
+			case "monster": {
+				const monster = entity
+				const fog = get_at_vec2(world.fog, monster.position, world.width)
+				if (fog.opacity == 1) break
+
+				if (monster.cooldown == 0) {
+					if (monster.target) {
+						const targets = get_entities(world, monster.target, ["monster", "player", "treasure"]).toArray()
+						if (targets.length == 0) {
+							vec2.copy(monster.animation.from, monster.position)
+							vec2.copy(monster.position, monster.target)
+							monster.animation.t = 0
+						}
+						const player = targets.find(entity => entity.type == "player")
+						if (player) player.health--
+						monster.cooldown = 0.5
+						monster.target = null
+					} else {
+						const [player] = get_entities(world, null, ["player"])
+						if (!player) break
+						const delta = vec2.sub(vec2.create(), player.position, monster.position)
+						if (Math.abs(delta[0]) > Math.abs(delta[1])) delta[1] = 0
+						else delta[0] = 0
+						vec2.normalize(delta, delta)
+
+						monster.target = vec2.add(delta, monster.position, delta)
+						monster.cooldown = 0.7
+					}
+				}
+
+				monster.cooldown = Math.max(monster.cooldown - delta, 0)
+				monster.animation.t = Math.min(monster.animation.t + delta * 5, 1)
+
+				break
+			}
 			case "player": {
 				const player = entity
 				const movement = vec2.fromValues(
@@ -339,12 +414,42 @@ export function update_world(world: World, delta: number) {
 				if (Math.abs(movement[0]) > Math.abs(movement[1])) movement[1] = 0
 				else movement[0] = 0
 				vec2.normalize(movement, movement)
+				const is_movement_zero = vec2.squaredLength(movement) == 0
 
-				if (vec2.squaredLength(movement) != 0 && player.cooldown == 0) {
+				if (player.targets && !is_movement_zero) {
+					vec2.add(player.targets[0], player.position, movement)
+					vec2.add(player.targets[1], player.targets[0], movement)
+				}
+
+				if (world.input.attack) {
+					if (player.targets && player.cooldown == 0) {
+						for (const target of player.targets) {
+							for (const entity of get_entities(world, target, ["monster", "treasure"])) {
+								entity.deleted = true
+								if (entity.type == "monster")
+									world.new_entities.push({
+										type: "loot",
+										position: entity.position,
+										deleted: false,
+										value: Math.floor(Math.random() * 2) + 1,
+									})
+							}
+						}
+						player.targets = null
+						player.cooldown = 0.2
+					} else {
+						player.targets = [vec2.clone(player.position), vec2.clone(player.position)]
+						vec2.add(player.targets[0], player.position, player.last_move)
+						vec2.add(player.targets[1], player.targets[0], player.last_move)
+					}
+				}
+
+				if (!player.targets && player.cooldown == 0 && !is_movement_zero) {
 					const new_pos = vec2.add(vec2.create(), player.position, movement)
 					const new_fog = get_at_vec2(world.fog, new_pos, world.width)
 					const tile = get_at_vec2(world.tiles, new_pos, world.width)
 
+					let can_move = passable_tiles.includes(tile)
 					switch (tile) {
 						case Tile.DoorClosed:
 							set_at_vec2(world.tiles, new_pos, world.width, Tile.DoorOpen)
@@ -352,9 +457,8 @@ export function update_world(world: World, delta: number) {
 							break
 					}
 
-					let can_move = passable_tiles.includes(tile)
 					if (can_move) {
-						for (const entity of entities_at(world, new_pos)) {
+						for (const entity of get_entities(world, new_pos, null)) {
 							switch (entity.type) {
 								case "player":
 									can_move = false
@@ -362,7 +466,7 @@ export function update_world(world: World, delta: number) {
 								case "monster": {
 									can_move = false
 									player.health--
-									player.cooldown = 0.5
+									player.cooldown = 0.2
 									new_fog.opacity = 0
 									break
 								}
@@ -374,7 +478,7 @@ export function update_world(world: World, delta: number) {
 								}
 								case "treasure":
 									can_move = false
-									player.cooldown = 0.3
+									player.cooldown = 0.2
 									if (new_fog.opacity == 1) {
 										new_fog.opacity = 0
 									} else {
@@ -386,7 +490,13 @@ export function update_world(world: World, delta: number) {
 						}
 					}
 
-					if (can_move) move_player(player, new_pos)
+					if (can_move) {
+						vec2.copy(player.animation.from, player.position)
+						vec2.copy(player.position, new_pos)
+						vec2.copy(player.last_move, movement)
+						player.animation.t = 0
+						player.cooldown = 0.2
+					}
 				}
 
 				// for each cell in view range
@@ -420,7 +530,7 @@ export function update_world(world: World, delta: number) {
 				}
 
 				player.cooldown = Math.max(player.cooldown - delta, 0)
-				player.animation.t = Math.min(player.animation.t + delta * 5 * player.animation.t_scale, 1)
+				player.animation.t = Math.min(player.animation.t + delta * 5, 1)
 
 				break
 			}
@@ -489,24 +599,31 @@ function recompute_fog(world: World) {
 	}
 }
 
-function move_player(player: Player, to: vec2) {
-	vec2.copy(player.animation.from, player.position)
-	vec2.copy(player.position, to)
-	player.animation.t = 0
-	player.animation.t_scale = 1 / vec2.distance(player.animation.from, player.position)
-	player.cooldown = 0.2 / player.animation.t_scale
-}
-
 // function reveal(world: World, pos: vec2, full_reveal = false): void {
 // 	const fog = get_at_vec2(world.fog, pos, world.width)
 // 	fog.opacity = full_reveal ? 0 : 0.9999
 // }
 
-function* entities_at(world: World, pos: vec2, include_deleted = false): Generator<Entity, void, undefined> {
+function* get_entities<Type extends Entity["type"]>(
+	world: World,
+	pos: vec2 | null,
+	types: Type[] | null,
+	include_deleted = false,
+): Generator<Extract<Entity, { type: Type }>, void, undefined> {
+	const set = new Set<Entity["type"]>(types)
 	for (const entity of world.entities) {
-		if (vec2.equals(entity.position, pos) && (!entity.deleted || include_deleted)) yield entity
+		const is_type_match = types?.length ? set.has(entity.type) : true
+		const is_pos_match = pos ? vec2.equals(pos, entity.position) : true
+		if (is_type_match && is_pos_match && (!entity.deleted || include_deleted)) yield entity as any
 	}
 }
+
+// function entities_by_type_first<Type extends Entity["type"]>(
+// 	world: World,
+// 	type: Type,
+// ): Extract<Entity, { type: Type }> | null {
+// 	return (world.entities.find(entity => entity.type == type) as any) ?? null
+// }
 
 // function* entities_around(
 // 	world: World,
