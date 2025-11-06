@@ -3,11 +3,13 @@ import "./style.css"
 
 const canvas = document.querySelector<HTMLCanvasElement>("#game")!
 const rect = canvas.getBoundingClientRect()
-canvas.width = rect.width
-canvas.height = rect.height
+canvas.width = (rect.width / 2) * devicePixelRatio
+canvas.height = (rect.height / 2) * devicePixelRatio
+const offscreen = new OffscreenCanvas(canvas.width, canvas.height)
 
-const ctx = canvas.getContext("2d")
-if (ctx) {
+const ctx_real = canvas.getContext("bitmaprenderer", { alpha: false })
+const ctx_off = offscreen.getContext("2d", { alpha: false })
+if (ctx_real && ctx_off) {
 	document.addEventListener("keydown", evt => {
 		switch (evt.code) {
 			case "KeyW":
@@ -59,7 +61,11 @@ if (ctx) {
 		const delta = time - previous
 		previous = time
 		update_world(world, delta / 1000)
-		draw_world(world, ctx)
+
+		draw_world(world, ctx_off)
+		const bitmap = offscreen.transferToImageBitmap()
+		ctx_real.transferFromImageBitmap(bitmap)
+
 		requestAnimationFrame(raf)
 	}
 	requestAnimationFrame(raf)

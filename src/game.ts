@@ -111,7 +111,7 @@ const Tile = {
 const passable_tiles = [Tile.Empty, Tile.DoorOpen]
 
 const TAU = 2 * Math.PI
-const CELL_SIZE = 32
+const CELL_SIZE = 16
 
 export function create_world(): World {
 	const width = 21
@@ -175,7 +175,7 @@ export function create_world(): World {
 				type: "monster",
 				position: vec2.fromValues(x, y),
 				deleted: false,
-				health: 5,
+				health: 3,
 				cooldown: 1,
 				target: null,
 				animation: { from: vec2.create(), t: 1 },
@@ -205,15 +205,14 @@ export function create_world(): World {
 	return world
 }
 
-export function draw_world(world: World, ctx: CanvasRenderingContext2D) {
+export function draw_world(world: World, ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) {
 	const temp = vec2.create()
 	const { width, height } = ctx.canvas
 
 	ctx.reset()
 	ctx.imageSmoothingEnabled = false
 
-	ctx.fillStyle = "teal"
-	ctx.fillRect(0, 0, width, height)
+	ctx.canvas.width = width
 
 	ctx.translate(
 		Math.round(width / 2 - (world.width * CELL_SIZE) / 2),
@@ -302,11 +301,7 @@ export function draw_world(world: World, ctx: CanvasRenderingContext2D) {
 			}
 			ctx.fill()
 		}
-		if (fog.opacity != 0) {
-			ctx.fillStyle = "gray"
-			ctx.globalAlpha = fog.opacity
-			ctx.fillRect(0, 0, CELL_SIZE, CELL_SIZE)
-		}
+		if (fog.opacity != 0) fill_rect(ctx, 0, 0, CELL_SIZE, CELL_SIZE, "gray", fog.opacity)
 		ctx.restore()
 	}
 
@@ -327,14 +322,20 @@ export function draw_world(world: World, ctx: CanvasRenderingContext2D) {
 					player.animation.t,
 				)
 				draw_sprite(ctx, world, "hero", "hero_down1", player_sprite_pos)
-				ctx.fillStyle = "rebeccapurple"
-				ctx.globalAlpha = 0.5
 				for (const target of player.targets ?? []) {
-					ctx.fillRect(target[0] * CELL_SIZE, target[1] * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+					fill_rect(
+						ctx,
+						target[0] * CELL_SIZE,
+						target[1] * CELL_SIZE,
+						CELL_SIZE,
+						CELL_SIZE,
+						"rebeccapurple",
+						0.5,
+					)
 				}
 				ctx.globalAlpha = 1
 				ctx.fillStyle = "white"
-				ctx.font = "32px sans-serif"
+				ctx.font = CELL_SIZE + "px sans-serif"
 				ctx.fillText("Health: " + player.health + " - Weath: " + player.wealth, 0, -CELL_SIZE)
 				break
 			}
@@ -347,11 +348,32 @@ export function draw_world(world: World, ctx: CanvasRenderingContext2D) {
 					monster.animation.t,
 				)
 				draw_sprite(ctx, world, "enemies", "ghost_right1", montser_sprite_pos)
+				fill_rect(
+					ctx,
+					montser_sprite_pos[0] * CELL_SIZE,
+					(montser_sprite_pos[1] + 0.8) * CELL_SIZE,
+					CELL_SIZE,
+					0.1 * CELL_SIZE,
+					"black",
+				)
+				fill_rect(
+					ctx,
+					montser_sprite_pos[0] * CELL_SIZE,
+					(montser_sprite_pos[1] + 0.8) * CELL_SIZE,
+					CELL_SIZE * (monster.health / 3),
+					0.1 * CELL_SIZE,
+					"red",
+				)
 				if (monster.target) {
-					ctx.fillStyle = "red"
-					ctx.globalAlpha = 0.5
-					ctx.fillRect(monster.target[0] * CELL_SIZE, monster.target[1] * CELL_SIZE, CELL_SIZE, CELL_SIZE)
-					ctx.globalAlpha = 1
+					fill_rect(
+						ctx,
+						monster.target[0] * CELL_SIZE,
+						monster.target[1] * CELL_SIZE,
+						CELL_SIZE,
+						CELL_SIZE,
+						"red",
+						0.5,
+					)
 				}
 				break
 			case "loot":
@@ -424,15 +446,21 @@ export function update_world(world: World, delta: number) {
 				if (world.input.attack) {
 					if (player.targets && player.cooldown == 0) {
 						for (const target of player.targets) {
+							const fog = get_at_vec2(world.fog, target, world.width)
+							fog.opacity = 0
 							for (const entity of get_entities(world, target, ["monster", "treasure"])) {
-								entity.deleted = true
-								if (entity.type == "monster")
-									world.new_entities.push({
-										type: "loot",
-										position: entity.position,
-										deleted: false,
-										value: Math.floor(Math.random() * 2) + 1,
-									})
+								if (entity.type == "monster") {
+									entity.health--
+									if (entity.health == 0) {
+										entity.deleted = true
+										world.new_entities.push({
+											type: "loot",
+											position: entity.position,
+											deleted: false,
+											value: Math.floor(Math.random() * 2) + 1,
+										})
+									}
+								} else entity.deleted = true
 							}
 						}
 						player.targets = null
@@ -756,7 +784,7 @@ type TileNames = {
 }
 
 function draw_sprite<Sheet extends keyof TileNames>(
-	ctx: CanvasRenderingContext2D,
+	ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
 	world: World,
 	sheet_name: Sheet,
 	sprite_name: TileNames[Sheet],
@@ -770,9 +798,23 @@ function draw_sprite<Sheet extends keyof TileNames>(
 		sprite.frame.y,
 		sprite.frame.w,
 		sprite.frame.h,
-		pos[0] * CELL_SIZE,
-		pos[1] * CELL_SIZE,
+		Math.floor(pos[0] * CELL_SIZE),
+		Math.floor(pos[1] * CELL_SIZE),
 		CELL_SIZE,
 		CELL_SIZE,
 	)
+}
+
+function fill_rect(
+	ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+	x: number,
+	y: number,
+	w: number,
+	h: number,
+	color: string,
+	opacity = 1,
+): void {
+	ctx.fillStyle = color
+	ctx.globalAlpha = opacity
+	ctx.fillRect(Math.floor(x), Math.floor(y), Math.floor(w), Math.floor(h))
 }
