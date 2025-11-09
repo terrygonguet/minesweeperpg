@@ -28,7 +28,7 @@ if (ctx_real && ctx_off) {
 				handle_input(world, { type: "keydown", key: "attack" })
 				break
 			case "KeyE":
-				handle_input(world, { type: "keydown", key: "loot" })
+				handle_input(world, { type: "keydown", key: "spell" })
 				break
 		}
 	})
@@ -50,12 +50,16 @@ if (ctx_real && ctx_off) {
 				handle_input(world, { type: "keyup", key: "attack" })
 				break
 			case "KeyE":
-				handle_input(world, { type: "keyup", key: "loot" })
+				handle_input(world, { type: "keyup", key: "spell" })
 				break
 		}
 	})
+	document.addEventListener("mousemove", ({ clientX, clientY }) =>
+		handle_input(world, { type: "mousemove", clientX, clientY }),
+	)
 
 	const world = create_world()
+	console.dir(((globalThis as any)._world = world))
 	let previous = performance.now()
 	const raf = (time: number) => {
 		const delta = time - previous
