@@ -5,8 +5,13 @@ import enemies_src from "$assets/enemies.sprites.png"
 import enemies_sheet from "$assets/enemies.sheet.json"
 import hero_src from "$assets/hero.sprites.png"
 import hero_sheet from "$assets/hero.sheet.json"
+import sword_src from "$assets/sword.svg"
+import fireball_src from "$assets/fireball.svg"
+import heart_src from "$assets/heart.svg"
 
 type World = {
+	clock: number
+	state: WorldState
 	width: number
 	height: number
 	tiles: Tile[]
@@ -34,6 +39,7 @@ type World = {
 			cur: number
 		}
 		spell: {
+			range: number
 			cooldown: number
 			cur: number
 		}
@@ -51,14 +57,17 @@ type World = {
 			image: HTMLImageElement
 			sheet: SpriteSheet
 		}
+		sword: HTMLImageElement
+		fireball: HTMLImageElement
+		heart: HTMLImageElement
 	}
 }
 
-type Entity = Player | Monster | Loot | Treasure
+type Entity = Player | Monster | Loot | Treasure | SwordSlash | FireBall
 
 type Player = {
 	type: "player"
-	deleted: false
+	deleted: boolean
 	state: PlayerState
 	position: vec2
 	last_position: vec2
@@ -68,7 +77,6 @@ type Player = {
 	wealth: number
 	speed: number
 	t: number
-	targets: vec2[] | null
 }
 
 type Monster = {
@@ -98,11 +106,37 @@ type Treasure = {
 	value: number
 }
 
+type SwordSlash = {
+	type: "sword_slash"
+	position: vec2
+	deleted: boolean
+	direction: Direction
+	damage: number
+	t: number
+}
+
+type FireBall = {
+	type: "fireball"
+	position: vec2
+	deleted: boolean
+	from: vec2
+	damage: number
+	t: number
+}
+
 type PlayerState = number & { __brand: "PlayerState" }
 const PlayerState = {
 	Moving: 1 as PlayerState,
 	Attacking: 2 as PlayerState,
 	Hurting: 3 as PlayerState,
+}
+
+type WorldState = number & { __brand: "WorldState" }
+const WorldState = {
+	Paused: 1 as WorldState,
+	Playing: 2 as WorldState,
+	Win: 3 as WorldState,
+	Lose: 4 as WorldState,
 }
 
 type Direction = number & { __brand: "Direction" }
@@ -143,6 +177,8 @@ export function create_world(): World {
 	const width = 21
 	const height = 21
 	const world: World = {
+		clock: 0,
+		state: WorldState.Playing,
 		width,
 		height,
 		tiles: Array.from({ length: width * height }, () => Tile.NONE),
@@ -166,11 +202,12 @@ export function create_world(): World {
 		},
 		actions: {
 			attack: {
-				cooldown: 0.7,
+				cooldown: 1.3,
 				cur: 0,
 			},
 			spell: {
-				cooldown: 3,
+				range: 5,
+				cooldown: 10,
 				cur: 0,
 			},
 		},
@@ -184,11 +221,17 @@ export function create_world(): World {
 				image: new Image(),
 				sheet: hero_sheet,
 			},
+			sword: new Image(),
+			fireball: new Image(),
+			heart: new Image(),
 		},
 	}
 	world.sprites.tiles.image.src = tileset_src
 	world.sprites.enemies.image.src = enemies_src
 	world.sprites.hero.image.src = hero_src
+	world.sprites.sword.src = sword_src
+	world.sprites.fireball.src = fireball_src
+	world.sprites.heart.src = heart_src
 
 	world.player = {
 		type: "player",
@@ -202,7 +245,6 @@ export function create_world(): World {
 		wealth: 0,
 		speed: 4,
 		t: 0,
-		targets: null,
 	}
 	world.entities.push(world.player)
 
@@ -245,6 +287,14 @@ export function create_world(): World {
 	return world
 }
 
+export function pause_world(world: World): void {
+	if (world.state == WorldState.Playing) world.state = WorldState.Paused
+}
+
+export function unpause_world(world: World): void {
+	if (world.state == WorldState.Paused) world.state = WorldState.Playing
+}
+
 export function draw_world(world: World, ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) {
 	const temp = vec2.create()
 	const { width, height } = ctx.canvas
@@ -252,8 +302,7 @@ export function draw_world(world: World, ctx: CanvasRenderingContext2D | Offscre
 	ctx.reset()
 	ctx.imageSmoothingEnabled = false
 
-	ctx.canvas.width = width
-
+	ctx.save()
 	ctx.translate(
 		Math.round(width / 2 - (world.width * CELL_SIZE) / 2),
 		Math.round(height / 2 - (world.height * CELL_SIZE) / 2),
@@ -347,55 +396,72 @@ export function draw_world(world: World, ctx: CanvasRenderingContext2D | Offscre
 
 	for (const entity of world.entities) {
 		const fog = get_at_vec2(world.fog, entity.position, world.width)
-		if (fog.opacity == 1) continue
-
 		const pos = vec2.copy(temp, entity.position)
 
 		ctx.save()
 		switch (entity.type) {
 			case "player": {
 				const player = entity
-				const player_sprite_pos =
-					player.state == PlayerState.Moving
-						? vec2.lerp(
-								vec2.create(),
-								player.last_position,
-								player.position,
-								1 - player.t / PLAYER_MOVE_DURATION,
-						  )
-						: player.position
+
+				let player_sprite_pos = player.position
+				if (player.state == PlayerState.Moving)
+					player_sprite_pos = vec2.lerp(
+						vec2.create(),
+						player.last_position,
+						player.position,
+						1 - player.t / PLAYER_MOVE_DURATION,
+					)
+
+				const animation_frame = Math.floor(world.clock / 0.3) % 2
+				const is_hurting = player.state == PlayerState.Hurting
+				let sprite: TileNames["hero"] = "hero_down1"
 				switch (player.facing) {
 					case Direction.Up:
-						draw_sprite(ctx, world, "hero", "hero_down1", player_sprite_pos)
+						if (is_hurting) sprite = "hero_down3"
+						else sprite = animation_frame == 0 ? "hero_up1" : "hero_up2"
 						break
 					case Direction.Down:
-						draw_sprite(ctx, world, "hero", "hero_down1", player_sprite_pos)
+						if (is_hurting) sprite = "hero_down3"
+						else sprite = animation_frame == 0 ? "hero_down1" : "hero_down2"
 						break
 					case Direction.Left:
-						draw_sprite(ctx, world, "hero", "hero_down1", player_sprite_pos)
+						if (is_hurting) sprite = "hero_left3"
+						else sprite = animation_frame == 0 ? "hero_left1" : "hero_left2"
 						break
 					case Direction.Right:
-						draw_sprite(ctx, world, "hero", "hero_down1", player_sprite_pos)
+						if (is_hurting) sprite = "hero_right3"
+						else sprite = animation_frame == 0 ? "hero_right1" : "hero_right2"
 						break
 				}
-				for (const target of player.targets ?? []) {
-					fill_rect(
-						ctx,
-						target[0] * CELL_SIZE,
-						target[1] * CELL_SIZE,
-						CELL_SIZE,
-						CELL_SIZE,
-						"rebeccapurple",
-						0.5,
+				draw_sprite(ctx, world, "hero", sprite, player_sprite_pos)
+
+				if (world.input.spell) {
+					ctx.strokeStyle = "white"
+					ctx.beginPath()
+					ctx.arc(
+						(player.position[0] + 0.5) * CELL_SIZE,
+						(player.position[1] + 0.5) * CELL_SIZE,
+						world.actions.spell.range * CELL_SIZE,
+						0,
+						TAU,
 					)
+					ctx.stroke()
 				}
-				ctx.globalAlpha = 1
+
+				for (let i = 0; i < player.health; i++) {
+					ctx.drawImage(world.sprites.heart, i * CELL_SIZE, -1.5 * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+				}
 				ctx.fillStyle = "white"
-				ctx.font = CELL_SIZE + "px sans-serif"
-				ctx.fillText("Health: " + player.health + " - Weath: " + player.wealth, 0, -CELL_SIZE)
+				ctx.font = CELL_SIZE + "px monospace"
+				ctx.textAlign = "right"
+				ctx.textBaseline = "bottom"
+				ctx.fillText(player.wealth.toString(), (world.width - 1.25) * CELL_SIZE, -0.25 * CELL_SIZE)
+				draw_sprite(ctx, world, "tiles", "gold1", [world.width - 1, -1.25], 1)
+
 				break
 			}
-			case "monster":
+			case "monster": {
+				if (fog.opacity == 1) break
 				const monster = entity
 				const montser_sprite_pos = vec2.lerp(
 					vec2.create(),
@@ -432,22 +498,131 @@ export function draw_world(world: World, ctx: CanvasRenderingContext2D | Offscre
 					)
 				}
 				break
+			}
+			case "sword_slash": {
+				fill_rect(
+					ctx,
+					entity.position[0] * CELL_SIZE,
+					entity.position[1] * CELL_SIZE,
+					CELL_SIZE,
+					CELL_SIZE,
+					"skyblue",
+					0.5,
+				)
+				const delta = direction_to_vec2(vec2.create(), entity.direction)
+				fill_rect(
+					ctx,
+					(entity.position[0] + delta[0]) * CELL_SIZE,
+					(entity.position[1] + delta[1]) * CELL_SIZE,
+					CELL_SIZE,
+					CELL_SIZE,
+					"skyblue",
+					0.5,
+				)
+				break
+			}
+			case "fireball": {
+				const pos = vec2.clone(entity.position)
+				fill_rect(ctx, pos[0] * CELL_SIZE, pos[1] * CELL_SIZE, CELL_SIZE, CELL_SIZE, "skyblue", 0.5)
+				direction_to_vec2(pos, Direction.Up)
+				vec2.add(pos, pos, entity.position)
+				fill_rect(ctx, pos[0] * CELL_SIZE, pos[1] * CELL_SIZE, CELL_SIZE, CELL_SIZE, "skyblue", 0.5)
+				direction_to_vec2(pos, Direction.Down)
+				vec2.add(pos, pos, entity.position)
+				fill_rect(ctx, pos[0] * CELL_SIZE, pos[1] * CELL_SIZE, CELL_SIZE, CELL_SIZE, "skyblue", 0.5)
+				direction_to_vec2(pos, Direction.Left)
+				vec2.add(pos, pos, entity.position)
+				fill_rect(ctx, pos[0] * CELL_SIZE, pos[1] * CELL_SIZE, CELL_SIZE, CELL_SIZE, "skyblue", 0.5)
+				direction_to_vec2(pos, Direction.Right)
+				vec2.add(pos, pos, entity.position)
+				fill_rect(ctx, pos[0] * CELL_SIZE, pos[1] * CELL_SIZE, CELL_SIZE, CELL_SIZE, "skyblue", 0.5)
+
+				const max_t = vec2.distance(entity.from, entity.position) / 20
+				vec2.lerp(pos, entity.from, entity.position, (max_t - entity.t) / max_t)
+				ctx.fillStyle = "red"
+				ctx.beginPath()
+				ctx.arc((pos[0] + 0.5) * CELL_SIZE, (pos[1] + 0.5) * CELL_SIZE, CELL_SIZE / 3, 0, TAU)
+				ctx.fill()
+				break
+			}
 			case "loot":
+				if (fog.opacity == 1) break
 				draw_sprite(ctx, world, "tiles", "gold1", pos)
 				break
 			case "treasure":
+				if (fog.opacity == 1) break
 				if (entity.value == 0) draw_sprite(ctx, world, "tiles", "chest3", pos)
 				else draw_sprite(ctx, world, "tiles", "chest2", pos)
 				break
 		}
 		ctx.restore()
 	}
+
+	ctx.restore()
+
+	if (world.player) {
+		ctx.save()
+		const attack_t = world.actions.attack.cur / world.actions.attack.cooldown
+		ctx.lineWidth = 2
+		ctx.strokeStyle = attack_t == 0 ? "red" : "gray"
+		ctx.translate(Math.floor(width / 2 - 3.5 * CELL_SIZE), Math.floor(height - 4 * CELL_SIZE))
+		ctx.strokeRect(-1, -1, 3 * CELL_SIZE + 2, 3 * CELL_SIZE + 2)
+		fill_rect(ctx, 0, 0, 3 * CELL_SIZE, 3 * CELL_SIZE, "white")
+		ctx.drawImage(world.sprites.sword, 0, 0, 3 * CELL_SIZE, 3 * CELL_SIZE)
+		fill_rect(
+			ctx,
+			0,
+			3 * CELL_SIZE * (1 - attack_t),
+			3 * CELL_SIZE,
+			Math.ceil(3 * CELL_SIZE * attack_t),
+			"gray",
+			0.5,
+		)
+		ctx.restore()
+
+		ctx.save()
+		const spell_t = world.actions.spell.cur / world.actions.spell.cooldown
+		ctx.lineWidth = 2
+		ctx.strokeStyle = world.actions.spell.cur == 0 ? "blue" : "gray"
+		ctx.translate(Math.floor(width / 2 + 0.5 * CELL_SIZE), Math.floor(height - 4 * CELL_SIZE))
+		ctx.strokeRect(-1, -1, 3 * CELL_SIZE + 2, 3 * CELL_SIZE + 2)
+		fill_rect(ctx, 0, 0, 3 * CELL_SIZE, 3 * CELL_SIZE, "white")
+		ctx.drawImage(world.sprites.fireball, 0, 0, 3 * CELL_SIZE, 3 * CELL_SIZE)
+		fill_rect(ctx, 0, 3 * CELL_SIZE * (1 - spell_t), 3 * CELL_SIZE, Math.ceil(3 * CELL_SIZE * spell_t), "gray", 0.5)
+		ctx.restore()
+	}
+
+	switch (world.state) {
+		case WorldState.Lose:
+			fill_rect(ctx, 0, height / 2 - 2 * CELL_SIZE, width, 4 * CELL_SIZE, "black", 0.7)
+			ctx.fillStyle = "red"
+			ctx.font = 3 * CELL_SIZE + "px monospace"
+			ctx.textAlign = "center"
+			ctx.textBaseline = "middle"
+			ctx.fillText("Game over", width / 2, height / 2)
+			break
+		case WorldState.Win:
+			fill_rect(ctx, 0, height / 2 - 2 * CELL_SIZE, width, 4 * CELL_SIZE, "black", 0.7)
+			ctx.fillStyle = "green"
+			ctx.font = 3 * CELL_SIZE + "px monospace"
+			ctx.textAlign = "center"
+			ctx.textBaseline = "middle"
+			ctx.fillText("Game won!", width / 2, height / 2)
+			break
+	}
 }
 
 export function update_world(world: World, delta: number) {
+	if (world.state != WorldState.Playing) return
+
+	world.clock += delta
 	for (const entity of world.entities) {
 		if (entity.deleted) continue
 		switch (entity.type) {
+			case "player": {
+				update_player(world, entity, delta)
+				break
+			}
 			case "monster": {
 				const monster = entity
 				const fog = get_at_vec2(world.fog, monster.position, world.width)
@@ -488,63 +663,138 @@ export function update_world(world: World, delta: number) {
 
 				break
 			}
-			case "player": {
-				update_player(world, entity, delta)
+			case "sword_slash": {
+				entity.t = Math.max(entity.t - delta, 0)
+				if (entity.t == 0) {
+					const positions = [vec2.create(), direction_to_vec2(vec2.create(), entity.direction)]
+					for (const pos of positions) {
+						vec2.add(pos, pos, entity.position)
+						if (!is_in_bounds_vec2(pos, world.width, world.height)) continue
+						const fog = get_at_vec2(world.fog, pos, world.width)
+						fog.opacity = 0
+						for (const target of get_entities(world, pos, ["monster", "treasure"])) {
+							if (target.type == "monster") target.health -= entity.damage
+							if (target.type == "treasure" || target.health <= 0) target.deleted = true
+						}
+					}
+
+					entity.deleted = true
+				}
+				break
+			}
+			case "fireball": {
+				entity.t = Math.max(entity.t - delta, 0)
+				if (entity.t == 0) {
+					const positions = [
+						vec2.create(),
+						direction_to_vec2(vec2.create(), Direction.Up),
+						direction_to_vec2(vec2.create(), Direction.Down),
+						direction_to_vec2(vec2.create(), Direction.Left),
+						direction_to_vec2(vec2.create(), Direction.Right),
+					]
+					for (const pos of positions) {
+						vec2.add(pos, pos, entity.position)
+						if (!is_in_bounds_vec2(pos, world.width, world.height)) continue
+						const fog = get_at_vec2(world.fog, pos, world.width)
+						fog.opacity = 0
+						for (const target of get_entities(world, pos, ["monster", "treasure"])) {
+							if (target.type == "monster") target.health -= entity.damage
+							if (target.type == "treasure" || target.health <= 0) target.deleted = true
+						}
+					}
+
+					entity.deleted = true
+				}
 				break
 			}
 		}
 	}
 
-	world.input.attack = 0
-	world.input.spell = 0
-
 	for (const fog of world.fog) {
 		if (fog.opacity != 0 && fog.opacity != 1) fog.opacity = Math.max(fog.opacity - delta * 5, 0)
 	}
 
-	world.entities = world.entities.filter(entity => !entity.deleted).concat(world.new_entities)
+	for (const entity of world.entities) {
+		if (!entity.deleted) {
+			world.new_entities.push(entity)
+			continue
+		}
+		switch (entity.type) {
+			case "player":
+				world.state = WorldState.Lose
+				world.player = null
+				break
+			case "monster":
+				world.new_entities.push({
+					type: "loot",
+					deleted: false,
+					position: entity.position,
+					value: Math.floor(Math.random() * 2) + 1,
+				})
+				break
+		}
+	}
+
+	world.entities = world.new_entities
 	world.new_entities = []
 	recompute_fog(world)
+
+	if (world.entities.every(entity => entity.type == "player" || (entity.type == "treasure" && entity.value == 0))) {
+		world.state = WorldState.Win
+	}
 }
 
-// if (player.targets && player.t == 0) {
-// 	for (const target of player.targets) {
-// 		const fog = get_at_vec2(world.fog, target, world.width)
-// 		fog.opacity = 0
-// 		for (const entity of get_entities(world, target, ["monster", "treasure"])) {
-// 			if (entity.type == "monster") {
-// 				entity.health--
-// 				if (entity.health == 0) {
-// 					entity.deleted = true
-// 					world.new_entities.push({
-// 						type: "loot",
-// 						position: entity.position,
-// 						deleted: false,
-// 						value: Math.floor(Math.random() * 2) + 1,
-// 					})
-// 				}
-// 			} else entity.deleted = true
-// 		}
-// 	}
-// 	player.targets = null
-// 	player.t = 0.2
-// }
-
 function update_player(world: World, player: Player, delta: number) {
+	if (player.health <= 0) {
+		player.deleted = true
+		return
+	}
+
 	player.t = Math.max(player.t - delta, 0)
+	world.actions.attack.cur = Math.max(world.actions.attack.cur - delta, 0)
+	world.actions.spell.cur = Math.max(world.actions.spell.cur - delta, 0)
 	switch (player.state) {
 		case PlayerState.Moving:
 			if (player.t != 0) break
 
-			if (world.input.attack) {
-				// const facing_direction = direction_to_vec2(vec2.create(), player.facing)
-				// player.targets = [vec2.clone(player.position), vec2.clone(player.position)]
-				// vec2.add(player.targets[0], player.position, facing_direction)
-				// vec2.add(player.targets[1], player.targets[0], facing_direction)
-
+			if (world.input.attack && world.actions.attack.cur == 0) {
+				const position = direction_to_vec2(vec2.create(), player.facing)
+				vec2.add(position, position, player.position)
+				world.new_entities.push({
+					type: "sword_slash",
+					position,
+					deleted: false,
+					direction: player.facing,
+					damage: 1,
+					t: 0.2,
+				})
+				world.actions.attack.cur = world.actions.attack.cooldown
 				player.state = PlayerState.Attacking
 				player.t = PLAYER_MOVE_DURATION
 				break
+			}
+
+			if (world.input.spell && world.actions.spell.cur == 0) {
+				const position = vec2.clone(world.input.mouse)
+				const player_center = vec2.add(vec2.create(), player.position, [0.5, 0.5])
+				if (
+					is_in_bounds_vec2(position, world.width, world.height) &&
+					vec2.distance(position, player_center) <= world.actions.spell.range
+				) {
+					vec2.floor(position, position)
+					world.new_entities.push({
+						type: "fireball",
+						deleted: false,
+						position,
+						from: vec2.clone(player.position),
+						damage: 2,
+						t: vec2.distance(world.input.mouse, player.position) / 20,
+					})
+					world.actions.spell.cur = world.actions.spell.cooldown
+					player.state = PlayerState.Attacking
+					player.t = PLAYER_MOVE_DURATION
+					break
+				}
 			}
 
 			const movement = vec2.fromValues(world.input.right - world.input.left, world.input.down - world.input.up)
@@ -552,7 +802,10 @@ function update_player(world: World, player: Player, delta: number) {
 			else movement[0] = 0
 			vec2.normalize(movement, movement)
 
-			if (vec2.squaredLength(movement) != 0) {
+			if (vec2.squaredLength(movement) == 0) {
+				const facing_vec = vec2.sub(vec2.create(), world.input.mouse, player.position)
+				player.facing = vec2_to_direction(facing_vec)
+			} else {
 				const new_pos = vec2.add(vec2.create(), player.position, movement)
 				const new_fog = get_at_vec2(world.fog, new_pos, world.width)
 				const tile = get_at_vec2(world.tiles, new_pos, world.width)
@@ -604,6 +857,7 @@ function update_player(world: World, player: Player, delta: number) {
 					vec2.copy(player.last_position, player.position)
 					vec2.copy(player.position, new_pos)
 					player.t = PLAYER_MOVE_DURATION
+					player.facing = vec2_to_direction(movement)
 				}
 			}
 
@@ -659,7 +913,6 @@ export function handle_input(world: World, input: Input) {
 			(input.clientX - innerWidth / 2) / (CELL_SIZE * 2) + world.width / 2,
 			(input.clientY - innerHeight / 2) / (CELL_SIZE * 2) + world.height / 2,
 		)
-		console.log(vec2.str(world.input.mouse))
 	} else {
 		const value = input.type == "keydown" ? performance.now() : 0
 		switch (input.key) {
@@ -865,6 +1118,26 @@ function direction_to_vec2(out: vec2, direction: Direction): vec2 {
 	}
 }
 
+function vec2_to_direction(vec: vec2): Direction {
+	if (Math.abs(vec[0]) >= Math.abs(vec[1])) return vec[0] < 0 ? Direction.Left : Direction.Right
+	else return vec[1] < 0 ? Direction.Up : Direction.Down
+}
+
+function direction_to_str(direction: Direction): string {
+	switch (direction) {
+		case Direction.Up:
+			return "Up"
+		case Direction.Down:
+			return "Down"
+		case Direction.Left:
+			return "Left"
+		case Direction.Right:
+			return "Right"
+		default:
+			throw new Error("exhaustive")
+	}
+}
+
 type Sprite = {
 	frame: { x: number; y: number; w: number; h: number }
 }
@@ -887,6 +1160,7 @@ function draw_sprite<Sheet extends keyof TileNames>(
 	sheet_name: Sheet,
 	sprite_name: TileNames[Sheet],
 	pos: vec2,
+	scale = 1,
 ): void {
 	const { sheet, image } = world.sprites[sheet_name]
 	const sprite = sheet.frames[sprite_name]
@@ -898,8 +1172,8 @@ function draw_sprite<Sheet extends keyof TileNames>(
 		sprite.frame.h,
 		Math.floor(pos[0] * CELL_SIZE),
 		Math.floor(pos[1] * CELL_SIZE),
-		CELL_SIZE,
-		CELL_SIZE,
+		CELL_SIZE * scale,
+		CELL_SIZE * scale,
 	)
 }
 
@@ -915,4 +1189,5 @@ function fill_rect(
 	ctx.fillStyle = color
 	ctx.globalAlpha = opacity
 	ctx.fillRect(Math.floor(x), Math.floor(y), Math.floor(w), Math.floor(h))
+	ctx.globalAlpha = 1
 }
