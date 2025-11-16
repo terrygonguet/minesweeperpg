@@ -8,6 +8,7 @@ import hero_sheet from "$assets/hero.sheet.json"
 import sword_src from "$assets/sword.svg"
 import fireball_src from "$assets/fireball.svg"
 import heart_src from "$assets/heart.svg"
+import flag_src from "$assets/flag.svg"
 
 type World = {
 	clock: number
@@ -42,6 +43,8 @@ type World = {
 			range: number
 			cooldown: number
 			cur: number
+			max_charges: number
+			charges: number
 		}
 	}
 	sprites: {
@@ -60,10 +63,11 @@ type World = {
 		sword: HTMLImageElement
 		fireball: HTMLImageElement
 		heart: HTMLImageElement
+		flag: HTMLImageElement
 	}
 }
 
-type Entity = Player | Monster | Loot | Treasure | SwordSlash | FireBall
+type Entity = Player | Monster | Loot | Treasure | SwordSlash | FireBall | Flag
 
 type Player = {
 	type: "player"
@@ -122,6 +126,12 @@ type FireBall = {
 	from: vec2
 	damage: number
 	t: number
+}
+
+type Flag = {
+	type: "flag"
+	position: vec2
+	deleted: boolean
 }
 
 type PlayerState = number & { __brand: "PlayerState" }
@@ -207,8 +217,10 @@ export function create_world(): World {
 			},
 			spell: {
 				range: 5,
-				cooldown: 10,
+				cooldown: 3,
 				cur: 0,
+				max_charges: 3,
+				charges: 0,
 			},
 		},
 		sprites: {
@@ -224,6 +236,7 @@ export function create_world(): World {
 			sword: new Image(),
 			fireball: new Image(),
 			heart: new Image(),
+			flag: new Image(),
 		},
 	}
 	world.sprites.tiles.image.src = tileset_src
@@ -232,6 +245,7 @@ export function create_world(): World {
 	world.sprites.sword.src = sword_src
 	world.sprites.fireball.src = fireball_src
 	world.sprites.heart.src = heart_src
+	world.sprites.flag.src = flag_src
 
 	world.player = {
 		type: "player",
@@ -524,18 +538,6 @@ export function draw_world(world: World, ctx: CanvasRenderingContext2D | Offscre
 			case "fireball": {
 				const pos = vec2.clone(entity.position)
 				fill_rect(ctx, pos[0] * CELL_SIZE, pos[1] * CELL_SIZE, CELL_SIZE, CELL_SIZE, "skyblue", 0.5)
-				direction_to_vec2(pos, Direction.Up)
-				vec2.add(pos, pos, entity.position)
-				fill_rect(ctx, pos[0] * CELL_SIZE, pos[1] * CELL_SIZE, CELL_SIZE, CELL_SIZE, "skyblue", 0.5)
-				direction_to_vec2(pos, Direction.Down)
-				vec2.add(pos, pos, entity.position)
-				fill_rect(ctx, pos[0] * CELL_SIZE, pos[1] * CELL_SIZE, CELL_SIZE, CELL_SIZE, "skyblue", 0.5)
-				direction_to_vec2(pos, Direction.Left)
-				vec2.add(pos, pos, entity.position)
-				fill_rect(ctx, pos[0] * CELL_SIZE, pos[1] * CELL_SIZE, CELL_SIZE, CELL_SIZE, "skyblue", 0.5)
-				direction_to_vec2(pos, Direction.Right)
-				vec2.add(pos, pos, entity.position)
-				fill_rect(ctx, pos[0] * CELL_SIZE, pos[1] * CELL_SIZE, CELL_SIZE, CELL_SIZE, "skyblue", 0.5)
 
 				const max_t = vec2.distance(entity.from, entity.position) / 20
 				vec2.lerp(pos, entity.from, entity.position, (max_t - entity.t) / max_t)
@@ -554,6 +556,15 @@ export function draw_world(world: World, ctx: CanvasRenderingContext2D | Offscre
 				if (entity.value == 0) draw_sprite(ctx, world, "tiles", "chest3", pos)
 				else draw_sprite(ctx, world, "tiles", "chest2", pos)
 				break
+			case "flag":
+				ctx.drawImage(
+					world.sprites.flag,
+					entity.position[0] * CELL_SIZE,
+					entity.position[1] * CELL_SIZE,
+					CELL_SIZE,
+					CELL_SIZE,
+				)
+				break
 		}
 		ctx.restore()
 	}
@@ -564,7 +575,7 @@ export function draw_world(world: World, ctx: CanvasRenderingContext2D | Offscre
 		ctx.save()
 		const attack_t = world.actions.attack.cur / world.actions.attack.cooldown
 		ctx.lineWidth = 2
-		ctx.strokeStyle = attack_t == 0 ? "red" : "gray"
+		ctx.strokeStyle = attack_t == 0 ? "blue" : "gray"
 		ctx.translate(Math.floor(width / 2 - 3.5 * CELL_SIZE), Math.floor(height - 4 * CELL_SIZE))
 		ctx.strokeRect(-1, -1, 3 * CELL_SIZE + 2, 3 * CELL_SIZE + 2)
 		fill_rect(ctx, 0, 0, 3 * CELL_SIZE, 3 * CELL_SIZE, "white")
@@ -583,12 +594,19 @@ export function draw_world(world: World, ctx: CanvasRenderingContext2D | Offscre
 		ctx.save()
 		const spell_t = world.actions.spell.cur / world.actions.spell.cooldown
 		ctx.lineWidth = 2
-		ctx.strokeStyle = world.actions.spell.cur == 0 ? "blue" : "gray"
+		ctx.strokeStyle = world.actions.spell.charges > 0 ? "firebrick" : "gray"
 		ctx.translate(Math.floor(width / 2 + 0.5 * CELL_SIZE), Math.floor(height - 4 * CELL_SIZE))
 		ctx.strokeRect(-1, -1, 3 * CELL_SIZE + 2, 3 * CELL_SIZE + 2)
 		fill_rect(ctx, 0, 0, 3 * CELL_SIZE, 3 * CELL_SIZE, "white")
 		ctx.drawImage(world.sprites.fireball, 0, 0, 3 * CELL_SIZE, 3 * CELL_SIZE)
 		fill_rect(ctx, 0, 3 * CELL_SIZE * (1 - spell_t), 3 * CELL_SIZE, Math.ceil(3 * CELL_SIZE * spell_t), "gray", 0.5)
+		ctx.textAlign = "center"
+		ctx.textBaseline = "middle"
+		ctx.font = `bold ${Math.floor(2.5 * CELL_SIZE)}px monospace`
+		ctx.fillStyle = "white"
+		ctx.strokeStyle = "black"
+		ctx.fillText(world.actions.spell.charges.toString(), 1.5 * CELL_SIZE, 1.5 * CELL_SIZE)
+		ctx.strokeText(world.actions.spell.charges.toString(), 1.5 * CELL_SIZE, 1.5 * CELL_SIZE)
 		ctx.restore()
 	}
 
@@ -616,6 +634,14 @@ export function update_world(world: World, delta: number) {
 	if (world.state != WorldState.Playing) return
 
 	world.clock += delta
+	world.actions.attack.cur = Math.max(world.actions.attack.cur - delta, 0)
+	world.actions.spell.cur = Math.max(world.actions.spell.cur - delta, 0)
+	if (world.actions.spell.cur == 0 && world.actions.spell.charges < world.actions.spell.max_charges) {
+		world.actions.spell.charges++
+		if (world.actions.spell.charges < world.actions.spell.max_charges)
+			world.actions.spell.cur = world.actions.spell.cooldown
+	}
+
 	for (const entity of world.entities) {
 		if (entity.deleted) continue
 		switch (entity.type) {
@@ -685,26 +711,19 @@ export function update_world(world: World, delta: number) {
 			case "fireball": {
 				entity.t = Math.max(entity.t - delta, 0)
 				if (entity.t == 0) {
-					const positions = [
-						vec2.create(),
-						direction_to_vec2(vec2.create(), Direction.Up),
-						direction_to_vec2(vec2.create(), Direction.Down),
-						direction_to_vec2(vec2.create(), Direction.Left),
-						direction_to_vec2(vec2.create(), Direction.Right),
-					]
-					for (const pos of positions) {
-						vec2.add(pos, pos, entity.position)
-						if (!is_in_bounds_vec2(pos, world.width, world.height)) continue
-						const fog = get_at_vec2(world.fog, pos, world.width)
-						fog.opacity = 0
-						for (const target of get_entities(world, pos, ["monster", "treasure"])) {
-							if (target.type == "monster") target.health -= entity.damage
-							if (target.type == "treasure" || target.health <= 0) target.deleted = true
-						}
+					const fog = get_at_vec2(world.fog, entity.position, world.width)
+					fog.opacity = 0
+					for (const target of get_entities(world, entity.position, ["monster", "treasure"])) {
+						if (target.type == "monster") target.health -= entity.damage
+						if (target.type == "treasure" || target.health <= 0) target.deleted = true
 					}
-
 					entity.deleted = true
 				}
+				break
+			}
+			case "flag": {
+				const fog = get_at_vec2(world.fog, entity.position, world.width)
+				if (fog.opacity != 1) entity.deleted = true
 				break
 			}
 		}
@@ -751,13 +770,31 @@ function update_player(world: World, player: Player, delta: number) {
 	}
 
 	player.t = Math.max(player.t - delta, 0)
-	world.actions.attack.cur = Math.max(world.actions.attack.cur - delta, 0)
-	world.actions.spell.cur = Math.max(world.actions.spell.cur - delta, 0)
 	switch (player.state) {
 		case PlayerState.Moving:
 			if (player.t != 0) break
 
 			if (world.input.attack && world.actions.attack.cur == 0) {
+				let has_flags = false
+				for (const flag of get_entities(world, null, ["flag"])) {
+					has_flags = true
+					flag.deleted = true
+					world.new_entities.push({
+						type: "fireball",
+						position: flag.position,
+						deleted: false,
+						damage: 2,
+						from: vec2.clone(player.position),
+						t: vec2.distance(flag.position, player.position) / 20,
+					})
+				}
+				if (has_flags) {
+					world.actions.attack.cur = world.actions.attack.cooldown
+					player.state = PlayerState.Attacking
+					player.t = PLAYER_MOVE_DURATION
+					break
+				}
+
 				const position = direction_to_vec2(vec2.create(), player.facing)
 				vec2.add(position, position, player.position)
 				world.new_entities.push({
@@ -774,22 +811,19 @@ function update_player(world: World, player: Player, delta: number) {
 				break
 			}
 
-			if (world.input.spell && world.actions.spell.cur == 0) {
-				const position = vec2.clone(world.input.mouse)
+			if (world.input.spell && world.actions.spell.charges > 0) {
+				const mouse_pos = vec2.clone(world.input.mouse)
+				if (!is_in_bounds_vec2(mouse_pos, world.width, world.height)) break
 				const player_center = vec2.add(vec2.create(), player.position, [0.5, 0.5])
-				if (
-					is_in_bounds_vec2(position, world.width, world.height) &&
-					vec2.distance(position, player_center) <= world.actions.spell.range
-				) {
-					vec2.floor(position, position)
+				if (vec2.distance(mouse_pos, player_center) > world.actions.spell.range) break
+				const position = vec2.floor(mouse_pos, mouse_pos)
+				if (!has_entity(world, position, ["flag"])) {
 					world.new_entities.push({
-						type: "fireball",
+						type: "flag",
 						deleted: false,
 						position,
-						from: vec2.clone(player.position),
-						damage: 2,
-						t: vec2.distance(world.input.mouse, player.position) / 20,
 					})
+					world.actions.spell.charges--
 					world.actions.spell.cur = world.actions.spell.cooldown
 					player.state = PlayerState.Attacking
 					player.t = PLAYER_MOVE_DURATION
@@ -980,6 +1014,13 @@ function* get_entities<Type extends Entity["type"]>(
 		const is_pos_match = pos ? vec2.equals(pos, entity.position) : true
 		if (is_type_match && is_pos_match && (!entity.deleted || include_deleted)) yield entity as any
 	}
+}
+
+function has_entity(world: World, pos: vec2 | null, types: Entity["type"][] | null, include_deleted = false): boolean {
+	for (const _entity of get_entities(world, pos, types, include_deleted)) {
+		return true
+	}
+	return false
 }
 
 // function entities_by_type_first<Type extends Entity["type"]>(
